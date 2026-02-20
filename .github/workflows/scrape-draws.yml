@@ -1,0 +1,29 @@
+name: Scrape Lottery Draws
+
+on:
+  schedule:
+    # Run daily at 3 AM UTC (after most draws are published)
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+        working-directory: .
+      - name: Install scraper deps
+        run: npm install @supabase/supabase-js
+        working-directory: .
+      - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run scrape
+        working-directory: .
