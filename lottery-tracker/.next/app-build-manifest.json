@@ -1,0 +1,43 @@
+{
+  "pages": {
+    "/_not-found/page": [
+      "static/chunks/webpack-c042ca735a68d6ec.js",
+      "static/chunks/4bd1b696-c023c6e3521b1417.js",
+      "static/chunks/255-ebd51be49873d76c.js",
+      "static/chunks/main-app-8e9b77a99ba0e376.js",
+      "static/chunks/app/_not-found/page-59a1c680a9904bb3.js"
+    ],
+    "/layout": [
+      "static/chunks/webpack-c042ca735a68d6ec.js",
+      "static/chunks/4bd1b696-c023c6e3521b1417.js",
+      "static/chunks/255-ebd51be49873d76c.js",
+      "static/chunks/main-app-8e9b77a99ba0e376.js",
+      "static/css/59834d71cc96be2c.css",
+      "static/chunks/app/layout-4b9e018ef18d196c.js"
+    ],
+    "/errors/page": [
+      "static/chunks/webpack-c042ca735a68d6ec.js",
+      "static/chunks/4bd1b696-c023c6e3521b1417.js",
+      "static/chunks/255-ebd51be49873d76c.js",
+      "static/chunks/main-app-8e9b77a99ba0e376.js",
+      "static/chunks/619-ba102abea3e3d0e4.js",
+      "static/chunks/app/errors/page-ca7449a7f8589f2c.js"
+    ],
+    "/lottery/[code]/page": [
+      "static/chunks/webpack-c042ca735a68d6ec.js",
+      "static/chunks/4bd1b696-c023c6e3521b1417.js",
+      "static/chunks/255-ebd51be49873d76c.js",
+      "static/chunks/main-app-8e9b77a99ba0e376.js",
+      "static/chunks/619-ba102abea3e3d0e4.js",
+      "static/chunks/app/lottery/[code]/page-26ebbdd8611e891d.js"
+    ],
+    "/page": [
+      "static/chunks/webpack-c042ca735a68d6ec.js",
+      "static/chunks/4bd1b696-c023c6e3521b1417.js",
+      "static/chunks/255-ebd51be49873d76c.js",
+      "static/chunks/main-app-8e9b77a99ba0e376.js",
+      "static/chunks/619-ba102abea3e3d0e4.js",
+      "static/chunks/app/page-26ebbdd8611e891d.js"
+    ]
+  }
+}

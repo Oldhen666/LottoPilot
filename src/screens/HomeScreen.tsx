@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,44 +6,107 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Modal,
+  RefreshControl,
 } from 'react-native';
-import { useLatestDraw } from '../hooks/useDraws';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useLatestDraw, invalidateDrawsCache } from '../hooks/useDraws';
+import { onAppActiveRefetch } from '../utils/appActiveRefetch';
 import { LOTTERY_DEFS } from '../constants/lotteries';
+import { COLORS, SPACING } from '../constants/theme';
 import type { LotteryId } from '../types/lottery';
 
 const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
 
 interface Props {
-  onSelectLottery: (id: LotteryId) => void;
+  selectedLottery: LotteryId;
+  onLotteryChange: (id: LotteryId) => void;
   onCheckTicket: () => void;
+  onViewDrawHistory: () => void;
 }
 
-export default function HomeScreen({ onSelectLottery, onCheckTicket }: Props) {
-  const [selectedId, setSelectedId] = useState<LotteryId>('lotto_max');
-  const { draw, loading } = useLatestDraw(selectedId);
-  const def = LOTTERY_DEFS[selectedId];
+export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTicket, onViewDrawHistory }: Props) {
+  const insets = useSafeAreaInsets();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [refetchTrigger, setRefetchTrigger] = useState(1);
+  const { draw, loading, error } = useLatestDraw(selectedLottery, refetchTrigger);
+  useEffect(() => {
+    return onAppActiveRefetch(() => setRefetchTrigger((n) => n + 1));
+  }, []);
+  const onRefresh = useCallback(() => {
+    invalidateDrawsCache(selectedLottery);
+    setRefetchTrigger((n) => n + 1);
+  }, [selectedLottery]);
+  const def = LOTTERY_DEFS[selectedLottery];
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onPullRefresh = useCallback(() => {
+    setRefreshing(true);
+    onRefresh();
+  }, [onRefresh]);
+  useEffect(() => {
+    if (!loading && refreshing) setRefreshing(false);
+  }, [loading, refreshing]);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>LottoPilot</Text>
-      <Text style={styles.subtitle}>Official lottery ticket checker</Text>
-
-      <View style={styles.lotteryGrid}>
-        {LOTTERY_IDS.map((id) => (
-          <TouchableOpacity
-            key={id}
-            style={[styles.lotteryCard, selectedId === id && styles.lotteryCardActive]}
-            onPress={() => setSelectedId(id)}
-          >
-            <Text style={styles.lotteryName}>{LOTTERY_DEFS[id].name}</Text>
-          </TouchableOpacity>
-        ))}
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={COLORS.primary} />}
+    >
+      <View style={styles.headerRow}>
+        <Ionicons name="ticket" size={28} color={COLORS.gold} style={styles.logoIcon} />
+        <View>
+          <Text style={styles.title}>LottoPilot</Text>
+          <Text style={styles.subtitle}>Official lottery ticket checker</Text>
+        </View>
       </View>
+
+      <View style={styles.dropdownWrap}>
+        <Text style={styles.label}>Lottery</Text>
+        <TouchableOpacity
+          style={styles.dropdown}
+          onPress={() => setDropdownOpen(true)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.dropdownText}>{LOTTERY_DEFS[selectedLottery].name}</Text>
+          <Ionicons name="chevron-down" size={20} color={COLORS.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      <Modal visible={dropdownOpen} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setDropdownOpen(false)}
+        >
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.dropdownModal}>
+            {LOTTERY_IDS.map((id, i) => (
+              <TouchableOpacity
+                key={id}
+                style={[
+                  styles.dropdownOption,
+                  selectedLottery === id && styles.dropdownOptionActive,
+                  i === LOTTERY_IDS.length - 1 && styles.dropdownOptionLast,
+                ]}
+                onPress={() => {
+                  onLotteryChange(id);
+                  setDropdownOpen(false);
+                }}
+              >
+                <Text style={styles.dropdownOptionText}>{LOTTERY_DEFS[id].name}</Text>
+                {selectedLottery === id && <Ionicons name="checkmark" size={20} color={COLORS.gold} />}
+              </TouchableOpacity>
+            ))}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <View style={styles.latestSection}>
         <Text style={styles.sectionTitle}>Latest Draw ({def?.name})</Text>
         {loading ? (
-          <ActivityIndicator size="small" color="#6366f1" />
+          <ActivityIndicator size="small" color={COLORS.primary} />
         ) : draw ? (
           <View style={styles.drawDisplay}>
             <Text style={styles.drawDate}>{draw.draw_date}</Text>
@@ -61,18 +124,28 @@ export default function HomeScreen({ onSelectLottery, onCheckTicket }: Props) {
             </View>
           </View>
         ) : (
-          <Text style={styles.noData}>No draw data yet. Run seed script.</Text>
+          <View>
+            <Text style={styles.noData}>
+              {error || 'No draw data yet. Run "npm run scrape" to fetch draws, or check .env and restart.'}
+            </Text>
+            <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
+              <Ionicons name="refresh" size={16} color={COLORS.text} />
+              <Text style={styles.refreshBtnText}>Refresh from Supabase</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
       <TouchableOpacity style={styles.primaryBtn} onPress={onCheckTicket}>
+        <Ionicons name="scan" size={20} color={COLORS.text} style={styles.btnIcon} />
         <Text style={styles.primaryBtnText}>Check My Ticket</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
         style={styles.secondaryBtn}
-        onPress={() => onSelectLottery(selectedId)}
+        onPress={onViewDrawHistory}
       >
+        <Ionicons name="list" size={20} color={COLORS.textSecondary} style={styles.btnIcon} />
         <Text style={styles.secondaryBtnText}>View Draw History</Text>
       </TouchableOpacity>
     </ScrollView>
@@ -80,54 +153,106 @@ export default function HomeScreen({ onSelectLottery, onCheckTicket }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  content: { padding: 20, paddingBottom: 40 },
-  title: { fontSize: 28, fontWeight: '700', color: '#f8fafc', marginBottom: 4 },
-  subtitle: { fontSize: 14, color: '#94a3b8', marginBottom: 24 },
-  lotteryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 24 },
-  lotteryCard: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  content: { paddingHorizontal: SPACING.screenPadding },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 24 },
+  logoIcon: { marginRight: 12 },
+  title: { fontSize: 26, fontWeight: '700', color: COLORS.text },
+  subtitle: { fontSize: 14, color: COLORS.textSecondary, marginTop: 2 },
+  label: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
+  dropdownWrap: { marginBottom: 24 },
+  dropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 10,
-    backgroundColor: '#1e293b',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: COLORS.bgElevated,
   },
-  lotteryCardActive: { backgroundColor: '#6366f1' },
-  lotteryName: { color: '#f8fafc', fontSize: 14, fontWeight: '600' },
+  dropdownText: { color: COLORS.text, fontSize: 16, fontWeight: '600' },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  dropdownModal: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 12,
+    width: '100%',
+    maxWidth: 320,
+    overflow: 'hidden',
+  },
+  dropdownOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.bgElevated,
+  },
+  dropdownOptionActive: { backgroundColor: COLORS.bgElevated },
+  dropdownOptionLast: { borderBottomWidth: 0 },
+  dropdownOptionText: { color: COLORS.text, fontSize: 16 },
   drawDisplay: { marginTop: 8 },
   latestSection: {
-    backgroundColor: '#1e293b',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 12,
     padding: 16,
     marginBottom: 24,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.gold,
   },
-  sectionTitle: { color: '#94a3b8', fontSize: 12, marginBottom: 8 },
-  drawDate: { color: '#f8fafc', fontSize: 14, marginBottom: 12 },
+  sectionTitle: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
+  drawDate: { color: COLORS.text, fontSize: 14, marginBottom: 12 },
   numberRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   ball: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: '#6366f1',
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ballSpecial: { backgroundColor: '#10b981' },
-  ballText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  noData: { color: '#64748b', fontSize: 14 },
+  ballSpecial: { backgroundColor: COLORS.success },
+  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
+  noData: { color: COLORS.textMuted, fontSize: 14 },
+  refreshBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: COLORS.primary,
+    borderRadius: 8,
+    gap: 8,
+    alignSelf: 'flex-start',
+  },
+  refreshBtnText: { color: COLORS.text, fontWeight: '600', fontSize: 14 },
   primaryBtn: {
-    backgroundColor: '#6366f1',
+    backgroundColor: COLORS.primary,
     padding: 16,
     borderRadius: 12,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 12,
   },
-  primaryBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  btnIcon: { marginRight: 8 },
+  primaryBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
   secondaryBtn: {
     padding: 16,
     borderRadius: 12,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: COLORS.bgElevated,
   },
-  secondaryBtnText: { color: '#94a3b8', fontSize: 16 },
+  secondaryBtnText: { color: COLORS.textSecondary, fontSize: 16 },
 });

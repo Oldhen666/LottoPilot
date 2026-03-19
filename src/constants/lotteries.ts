@@ -8,11 +8,12 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     draw_frequency: 'weekly',
     main_count: 7,
     main_min: 1,
-    main_max: 49,
+    main_max: 50,
     special_count: 1,
     special_min: 1,
-    special_max: 49,
+    special_max: 50,
     source_url: 'https://www.olg.ca/en/lottery/play-lotto-max-encore.html',
+    plays_per_ticket: 3,
   },
   lotto_649: {
     id: 'lotto_649',
@@ -26,6 +27,7 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     special_min: 1,
     special_max: 49,
     source_url: 'https://www.olg.ca/en/lottery/play-lotto-649-encore.html',
+    plays_per_ticket: 3,
   },
   powerball: {
     id: 'powerball',
@@ -39,6 +41,7 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     special_min: 1,
     special_max: 26,
     source_url: 'https://www.powerball.com/',
+    plays_per_ticket: 5,
   },
   mega_millions: {
     id: 'mega_millions',
@@ -52,5 +55,6 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     special_min: 1,
     special_max: 25,
     source_url: 'https://www.megamillions.com/',
+    plays_per_ticket: 5,
   },
 };

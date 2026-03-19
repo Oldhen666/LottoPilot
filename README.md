@@ -20,7 +20,6 @@ LottoPilot/
 │   │   ├── HomeScreen.tsx
 │   │   ├── CheckTicketScreen.tsx
 │   │   ├── ResultScreen.tsx
-│   │   ├── HistoryScreen.tsx
 │   │   ├── StatsScreen.tsx
 │   │   ├── InsightsScreen.tsx
 │   │   ├── DrawsListScreen.tsx
@@ -51,5 +50,14 @@ npm install
 # Add .env with EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY
 npm start
 ```
+
+扫码或按提示在模拟器/真机打开。底部 Tab：**Home | Compass | Strategy Lab | Settings**。  
+**Compass 入口**：点击底部第二个 Tab「Compass」图标即可打开趋势罗盘。
+
+## 数据更新（每日）
+
+- **开奖数据**：`npm run scrape` 或 `npm run scrape:history`（全历史）
+- **Compass 预计算**：scraper 完成后自动更新；也可单独运行 `npm run compass:update`
+- **Draw History（开奖历史）**：已从 Supabase 拉取，随 scrape 更新
 
 See [DEPLOY.md](./DEPLOY.md) for full deployment steps.

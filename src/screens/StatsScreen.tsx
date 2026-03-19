@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { COLORS, SPACING } from '../constants/theme';
 import { getStatsForInsights, getMyPickStats } from '../db/sqlite';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 
 export default function StatsScreen() {
+  const insets = useSafeAreaInsets();
   const [outcome, setOutcome] = useState<Awaited<ReturnType<typeof getStatsForInsights>> | null>(null);
   const [picks, setPicks] = useState<Awaited<ReturnType<typeof getMyPickStats>> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -18,8 +22,11 @@ export default function StatsScreen() {
 
   if (loading || !outcome) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Stats</Text>
+      <View style={[styles.container, { paddingTop: insets.top + SPACING.screenPadding }]}>
+        <View style={styles.headerRow}>
+          <Ionicons name="stats-chart" size={24} color={COLORS.gold} style={styles.titleIcon} />
+          <Text style={styles.title}>Stats</Text>
+        </View>
         <Text style={styles.empty}>{loading ? 'Loading...' : 'No data yet. Check some tickets first.'}</Text>
       </View>
     );
@@ -28,8 +35,14 @@ export default function StatsScreen() {
   const hitRate = outcome.total > 0 ? ((outcome.anyHitCount / outcome.total) * 100).toFixed(1) : '0';
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Stats & Insights</Text>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
+    >
+      <View style={styles.headerRow}>
+        <Ionicons name="stats-chart" size={24} color={COLORS.gold} style={styles.titleIcon} />
+        <Text style={styles.title}>Stats & Insights</Text>
+      </View>
       <Text style={styles.subtitle}>Outcome summary from your checks (for informational use only)</Text>
 
       <View style={styles.section}>
@@ -121,44 +134,48 @@ export default function StatsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  content: { padding: 20, paddingBottom: 40 },
-  title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 4 },
-  subtitle: { color: '#94a3b8', fontSize: 12, marginBottom: 24 },
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  content: { paddingHorizontal: SPACING.screenPadding },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  titleIcon: { marginRight: 10 },
+  title: { fontSize: 24, fontWeight: '700', color: COLORS.text },
+  subtitle: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 24 },
   section: { marginBottom: 24 },
-  sectionTitle: { color: '#94a3b8', fontSize: 12, marginBottom: 8 },
+  sectionTitle: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
   card: {
-    backgroundColor: '#1e293b',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 12,
     padding: 16,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.gold,
   },
   statRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 },
-  statLabel: { color: '#94a3b8' },
-  statValue: { color: '#f8fafc', fontWeight: '600' },
+  statLabel: { color: COLORS.textSecondary },
+  statValue: { color: COLORS.text, fontWeight: '600' },
   distRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
-  distLabel: { color: '#94a3b8' },
-  distValue: { color: '#f8fafc' },
+  distLabel: { color: COLORS.textSecondary },
+  distValue: { color: COLORS.text },
   lotteryCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 10,
     padding: 12,
     marginBottom: 8,
   },
-  lotteryName: { color: '#f8fafc', fontWeight: '600' },
-  lotteryStats: { color: '#94a3b8', fontSize: 14 },
-  pickLabel: { color: '#94a3b8', fontSize: 12, marginTop: 12, marginBottom: 8 },
+  lotteryName: { color: COLORS.text, fontWeight: '600' },
+  lotteryStats: { color: COLORS.textSecondary, fontSize: 14 },
+  pickLabel: { color: COLORS.textSecondary, fontSize: 12, marginTop: 12, marginBottom: 8 },
   numberRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   pickBall: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#334155',
+    backgroundColor: COLORS.bgElevated,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pickNum: { color: '#f8fafc', fontWeight: '700' },
-  pickCount: { color: '#64748b', fontSize: 10 },
+  pickNum: { color: COLORS.text, fontWeight: '700' },
+  pickCount: { color: COLORS.textMuted, fontSize: 10 },
   oddEvenRow: { flexDirection: 'row', gap: 16, marginTop: 8 },
-  oddEvenText: { color: '#f8fafc' },
-  empty: { color: '#64748b', marginTop: 20 },
+  oddEvenText: { color: COLORS.text },
+  empty: { color: COLORS.textMuted, marginTop: 20 },
 });

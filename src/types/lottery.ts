@@ -12,6 +12,8 @@ export interface LotteryDef {
   special_min?: number;
   special_max?: number;
   source_url: string;
+  /** Typical plays per ticket (e.g. Lotto Max = 3, Powerball = 5) */
+  plays_per_ticket?: number;
 }
 
 export interface Draw {

@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "outDir": "./dist"
   },
-  "include": ["./*.ts"]
+  "include": ["./*.ts", "../src/compass/*.ts", "../src/constants/lotteries.ts"]
 }

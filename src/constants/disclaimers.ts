@@ -6,3 +6,9 @@ export const DISCLAIMER_SUBSCRIPTION =
 
 export const DATA_SOURCE_NOTICE =
   'Draw data comes from official public lottery result pages. We do not copy large content; only necessary fields are stored for your convenience.';
+
+export const PRIZE_DISCLAIMER =
+  'Prize amounts are estimates / informational only. Check official site for actual prize. This app does not sell tickets, purchase tickets, or distribute prizes.';
+
+export const DISCLAIMER_PRIZE_VERIFY =
+  'Lottery prize results require personal verification. Our app displays prize estimates for reference only and cannot guarantee accuracy. You must verify all results with the official lottery authority before claiming. We are not liable for any missed, incorrect, or unclaimed prizes.';

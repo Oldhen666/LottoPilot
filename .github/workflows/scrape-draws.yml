@@ -1,11 +1,11 @@
+# Scrape Lottery Draws - runs daily and populates Supabase draws table
+# Required: Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to repo Secrets
 name: Scrape Lottery Draws
 
 on:
   schedule:
-    # Run daily at 3 AM UTC (after most draws are published)
     - cron: '0 3 * * *'
   workflow_dispatch:
-    # Allow manual trigger
 
 jobs:
   scrape:
@@ -17,13 +17,22 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-        working-directory: .
-      - name: Install scraper deps
-        run: npm install @supabase/supabase-js
-        working-directory: .
+      - name: Validate secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "::error::SUPABASE_URL secret is not set. Add it in Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY secret is not set. Add it in Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo "Secrets configured OK"
       - name: Run scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: npm run scrape
-        working-directory: .

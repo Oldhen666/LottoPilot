@@ -17,9 +17,16 @@ export function checkTicket(
   }
 
   let matchSpecial = 0;
-  if (userSpecial?.length && specialSet) {
-    for (const n of userSpecial) {
-      if (specialSet.has(n)) matchSpecial++;
+  if (specialSet) {
+    if (userSpecial?.length) {
+      for (const n of userSpecial) {
+        if (specialSet.has(n)) matchSpecial++;
+      }
+    } else {
+      // Lotto Max: bonus is in the draw; user's 7 main may include it
+      for (const n of userMain) {
+        if (specialSet.has(n)) matchSpecial++;
+      }
     }
   }
 

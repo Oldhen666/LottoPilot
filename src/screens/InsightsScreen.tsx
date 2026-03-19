@@ -1,25 +1,41 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { COLORS, SPACING } from '../constants/theme';
 import * as SecureStore from 'expo-secure-store';
 import { DISCLAIMER_SUBSCRIPTION } from '../constants/disclaimers';
 import { generateCandidates, type CandidatePick } from '../utils/localAnalysis';
 import { getRecords } from '../db/sqlite';
 import { LOTTERY_DEFS } from '../constants/lotteries';
+import { isIAPAvailable, getIAPProducts, formatPiratePrice, formatAstronautPrice } from '../services/iap';
 import type { LotteryId } from '../types/lottery';
 
 const LOCAL_UNLOCK_KEY = 'lottopilot_local_unlock';
 const AI_SUB_KEY = 'lottopilot_ai_sub';
 
 export default function InsightsScreen() {
+  const insets = useSafeAreaInsets();
   const [localUnlocked, setLocalUnlocked] = useState(false);
   const [aiSub, setAiSub] = useState(false);
   const [candidates, setCandidates] = useState<CandidatePick[]>([]);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');
   const [needMoreData, setNeedMoreData] = useState(false);
+  const [piratePrice, setPiratePrice] = useState('$3.49');
+  const [astronautPrice, setAstronautPrice] = useState('$0.99/mo');
 
   useEffect(() => {
     SecureStore.getItemAsync(LOCAL_UNLOCK_KEY).then((v) => setLocalUnlocked(v === 'true'));
     SecureStore.getItemAsync(AI_SUB_KEY).then((v) => setAiSub(v === 'true'));
+  }, []);
+
+  useEffect(() => {
+    if (isIAPAvailable()) {
+      getIAPProducts().then(({ pirate, astronaut }) => {
+        setPiratePrice(formatPiratePrice(pirate));
+        setAstronautPrice(formatAstronautPrice(astronaut));
+      });
+    }
   }, []);
 
   const runLocalAnalysis = async () => {
@@ -49,8 +65,14 @@ export default function InsightsScreen() {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>Insights & Analysis</Text>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
+    >
+      <View style={styles.headerRow}>
+        <Ionicons name="bulb" size={24} color={COLORS.gold} style={styles.titleIcon} />
+        <Text style={styles.title}>Insights & Analysis</Text>
+      </View>
       <Text style={styles.subtitle}>
         Decision support tools. For entertainment only. Does not increase or guarantee any outcome.
       </Text>
@@ -110,7 +132,7 @@ export default function InsightsScreen() {
           </>
         ) : (
           <TouchableOpacity style={styles.purchaseBtn} onPress={handleLocalUnlock}>
-            <Text style={styles.purchaseBtnText}>Unlock $1.99 (MVP: tap to unlock)</Text>
+            <Text style={styles.purchaseBtnText}>Unlock {piratePrice} (MVP: tap to unlock)</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -126,7 +148,7 @@ export default function InsightsScreen() {
           </View>
         ) : (
           <TouchableOpacity style={styles.purchaseBtn} onPress={handleAiSub}>
-            <Text style={styles.purchaseBtnText}>Subscribe $0.99/mo (MVP: tap to unlock)</Text>
+            <Text style={styles.purchaseBtnText}>Subscribe {astronautPrice} (MVP: tap to unlock)</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -135,56 +157,58 @@ export default function InsightsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  content: { padding: 20, paddingBottom: 40 },
-  title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 4 },
-  subtitle: { color: '#94a3b8', fontSize: 14, marginBottom: 16 },
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  content: { paddingHorizontal: SPACING.screenPadding },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+  titleIcon: { marginRight: 10 },
+  title: { fontSize: 24, fontWeight: '700', color: COLORS.text },
+  subtitle: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 16 },
   disclaimer: {
-    backgroundColor: '#1e293b',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 10,
     padding: 14,
     marginBottom: 24,
     borderLeftWidth: 4,
-    borderLeftColor: '#6366f1',
+    borderLeftColor: COLORS.gold,
   },
-  disclaimerText: { color: '#94a3b8', fontSize: 12 },
+  disclaimerText: { color: COLORS.textSecondary, fontSize: 12 },
   card: {
-    backgroundColor: '#1e293b',
+    backgroundColor: COLORS.bgCard,
     borderRadius: 12,
     padding: 18,
     marginBottom: 16,
   },
-  cardTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '600', marginBottom: 8 },
-  cardDesc: { color: '#94a3b8', fontSize: 14, marginBottom: 12 },
+  cardTitle: { color: COLORS.text, fontSize: 18, fontWeight: '600', marginBottom: 8 },
+  cardDesc: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 12 },
   purchaseBtn: {
-    backgroundColor: '#6366f1',
+    backgroundColor: COLORS.primary,
     padding: 14,
     borderRadius: 10,
     alignItems: 'center',
   },
-  purchaseBtnText: { color: '#fff', fontWeight: '600' },
+  purchaseBtnText: { color: COLORS.text, fontWeight: '600' },
   unlocked: { padding: 10, alignItems: 'center' },
-  unlockedText: { color: '#10b981', fontWeight: '600' },
+  unlockedText: { color: COLORS.success, fontWeight: '600' },
   lotteryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   lotteryPill: {
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: '#334155',
+    backgroundColor: COLORS.bgElevated,
   },
-  lotteryPillActive: { backgroundColor: '#6366f1' },
-  lotteryPillText: { color: '#f8fafc', fontSize: 12 },
+  lotteryPillActive: { backgroundColor: COLORS.primary },
+  lotteryPillText: { color: COLORS.text, fontSize: 12 },
   analyzeBtn: {
-    backgroundColor: '#334155',
+    backgroundColor: COLORS.bgElevated,
     padding: 12,
     borderRadius: 10,
     alignItems: 'center',
     marginTop: 12,
   },
-  analyzeBtnText: { color: '#f8fafc', fontWeight: '600' },
+  analyzeBtnText: { color: COLORS.text, fontWeight: '600' },
   results: { marginTop: 16 },
   pickCard: {
-    backgroundColor: '#334155',
+    backgroundColor: COLORS.bgElevated,
     borderRadius: 10,
     padding: 12,
     marginBottom: 10,
@@ -194,12 +218,12 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#6366f1',
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ballSpecial: { backgroundColor: '#10b981' },
-  ballText: { color: '#fff', fontWeight: '700', fontSize: 12 },
-  explanation: { color: '#94a3b8', fontSize: 11, marginTop: 8 },
-  hint: { color: '#64748b', fontSize: 12, marginTop: 8 },
+  ballSpecial: { backgroundColor: COLORS.success },
+  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 12 },
+  explanation: { color: COLORS.textSecondary, fontSize: 11, marginTop: 8 },
+  hint: { color: COLORS.textMuted, fontSize: 12, marginTop: 8 },
 });
