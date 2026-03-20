@@ -4,6 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import { COLORS, SPACING } from '../constants/theme';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { useEntitlements } from '../hooks/useEntitlements';
 import { getPrizeTierIcon } from '../utils/prizeTierIcon';
 import type { CheckRecord } from '../db/sqlite';
 
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
+  const { plan } = useEntitlements();
   const def = LOTTERY_DEFS[record.lottery_id];
   const mainSet = new Set(record.winning_numbers);
   const specialSet = record.winning_special?.length
@@ -222,6 +225,8 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
       <TouchableOpacity style={styles.doneBtn} onPress={onDone}>
         <Text style={styles.doneBtnText}>Done</Text>
       </TouchableOpacity>
+
+      <BannerAdPlaceholder testId="result" userPlan={plan} />
     </ScrollView>
   );
 }

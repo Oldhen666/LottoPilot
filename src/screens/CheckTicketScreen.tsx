@@ -32,6 +32,8 @@ import { parseTicketFromImage } from '../services/ocr';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
 import { MainNumbersBoxes } from '../components/MainNumbersBoxes';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { useEntitlements } from '../hooks/useEntitlements';
 import { isValidDrawDate } from '../utils/drawDateValidation';
 import type { LotteryId } from '../types/lottery';
 import type { CurrentJurisdiction } from '../types/jurisdiction';
@@ -71,6 +73,7 @@ export default function CheckTicketScreen({
   onBack,
   onResult,
 }: Props) {
+  const { plan } = useEntitlements();
   const [lotteryId, setLotteryId] = useState<LotteryId>(preselectedLottery);
   const [lotteryDropdownOpen, setLotteryDropdownOpen] = useState(false);
   const [specialInput, setSpecialInput] = useState('');
@@ -677,6 +680,8 @@ export default function CheckTicketScreen({
         <Text style={styles.scanHint}>Use "Scan ticket" for angled photos — it flattens the image for better date/number recognition.</Text>
       )}
 
+      <BannerAdPlaceholder testId="scan" userPlan={plan} />
+
       {imageUri && (
         <View style={styles.imagePreview}>
           <View style={styles.thumbnailWrap}>
@@ -864,6 +869,8 @@ export default function CheckTicketScreen({
       >
         <Text style={styles.checkBtnText}>Check Results</Text>
       </TouchableOpacity>
+
+      <BannerAdPlaceholder testId="check-bottom" userPlan={plan} />
 
       <Modal visible={!!dateConfirmModal} transparent animationType="fade">
         <TouchableOpacity

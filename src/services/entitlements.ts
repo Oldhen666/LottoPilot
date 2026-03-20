@@ -89,15 +89,18 @@ function entitlementsFromLocal(
 }
 
 const HAD_ASTRONAUT_KEY = 'lottopilot_had_astronaut_subscription';
+/** 用户应用内取消 Astronaut 后，恢复购买时不再自动恢复 Astronaut（直到用户主动点 Restore 或重新购买） */
+const USER_REVOKED_ASTRONAUT_KEY = 'lottopilot_user_revoked_astronaut';
 
 export async function getEntitlements(): Promise<Entitlements> {
-  const [server, pro, trialEnds, ai, compass, hadAstronaut] = await Promise.all([
+  const [server, pro, trialEnds, ai, compass, hadAstronaut, userRevoked] = await Promise.all([
     fetchEntitlementsFromSupabase(),
     getItem(PRO_UNLOCK_KEY),
     getItem(PRO_TRIAL_ENDS_KEY),
     getItem(AI_SUB_KEY),
     getItem(COMPASS_UNLOCK_KEY),
     getItem(HAD_ASTRONAUT_KEY),
+    getItem(USER_REVOKED_ASTRONAUT_KEY),
   ]);
 
   const localPro = pro === 'true';
@@ -105,14 +108,15 @@ export async function getEntitlements(): Promise<Entitlements> {
   const localHadAstronaut = hadAstronaut === 'true';
   const localTrialEnd = trialEnds ? new Date(trialEnds).getTime() : 0;
   const localProTrialActive = localTrialEnd > Date.now();
+  const forceProOff = userRevoked === 'true';
 
   if (server) {
     const serverProTrialEnd = server.pro_trial_ends ? new Date(server.pro_trial_ends).getTime() : 0;
     const serverProTrialActive = serverProTrialEnd > Date.now();
-    const proUnlocked = server.pro_unlock || serverProTrialActive || localPro || localProTrialActive;
+    const proUnlocked = forceProOff ? false : (server.pro_unlock || serverProTrialActive || localPro || localProTrialActive);
     const compassUnlocked = server.compass_unlock || localCompass;
     const hadAstronautSubscription = server.had_astronaut_subscription || localHadAstronaut;
-    const proTrialEnds = server.pro_trial_ends ?? trialEnds ?? null;
+    const proTrialEnds = forceProOff ? null : (server.pro_trial_ends ?? trialEnds ?? null);
 
     const ent: Entitlements = {
       proUnlocked,
@@ -161,9 +165,9 @@ async function syncEntitlementsToSupabase(): Promise<void> {
 }
 
 /** 标记用户曾订阅过 Astronaut（购买成功后调用，用于回归用户显示 Upgrade） */
-export async function setHadAstronautSubscription(): Promise<void> {
+export async function setHadAstronautSubscription(opts?: { sync?: boolean }): Promise<void> {
   await setItem(HAD_ASTRONAUT_KEY, 'true');
-  await syncEntitlementsToSupabase();
+  if (opts?.sync !== false) await syncEntitlementsToSupabase();
 }
 
 /** 是否曾订阅过 Astronaut（回归用户用 base plan，无免费试用） */
@@ -172,10 +176,11 @@ export async function getHadAstronautSubscription(): Promise<boolean> {
   return ent.hadAstronautSubscription;
 }
 
-export async function setProUnlocked(value: boolean): Promise<void> {
+/** @param opts.sync - 默认 true；restore 时传 false，仅更新本地 */
+export async function setProUnlocked(value: boolean, opts?: { sync?: boolean }): Promise<void> {
   await setItem(PRO_UNLOCK_KEY, value ? 'true' : 'false');
   if (!value) await setItem(PRO_TRIAL_ENDS_KEY, '');
-  await syncEntitlementsToSupabase();
+  if (opts?.sync !== false) await syncEntitlementsToSupabase();
 }
 
 /** Start 1-month Astronaut trial (for Pirate users). */
@@ -205,9 +210,10 @@ export async function getCompassUnlocked(): Promise<boolean> {
   return compass === 'true' || pro === 'true';
 }
 
-export async function setCompassUnlocked(value: boolean): Promise<void> {
+/** @param opts.sync - 默认 true；restore 时传 false，仅更新本地，由 syncLocalEntitlementsToServer 决定是否同步（避免 license tester 污染 server） */
+export async function setCompassUnlocked(value: boolean, opts?: { sync?: boolean }): Promise<void> {
   await setItem(COMPASS_UNLOCK_KEY, value ? 'true' : 'false');
-  await syncEntitlementsToSupabase();
+  if (opts?.sync !== false) await syncEntitlementsToSupabase();
 }
 
 export async function getCompassUsedCount(): Promise<number> {
@@ -238,21 +244,39 @@ export async function tryConsumeCompassUse(): Promise<boolean> {
 /** 仅取消 Astronaut 订阅（清除 Pro），保留 Pirate 一次性购买的 Compass 权限。 */
 export async function revokeAstronautSubscription(): Promise<void> {
   await setProUnlocked(false);
+  await setItem(USER_REVOKED_ASTRONAUT_KEY, 'true');
+}
+
+/** 用户是否在应用内取消了 Astronaut（恢复购买时跳过 Astronaut，直到用户主动 Restore） */
+export async function getUserRevokedAstronautFlag(): Promise<boolean> {
+  const v = await getItem(USER_REVOKED_ASTRONAUT_KEY);
+  return v === 'true';
+}
+
+/** 清除「用户取消」标记，用于 Restore purchases 或重新购买时 */
+export async function clearUserRevokedAstronautFlag(): Promise<void> {
+  await setItem(USER_REVOKED_ASTRONAUT_KEY, 'false');
 }
 
 /** 登录后调用：合并服务端与本地权益后同步，避免用本地空状态覆盖服务端已有订阅 */
 export async function syncLocalEntitlementsToServer(): Promise<void> {
-  const server = await fetchEntitlementsFromSupabase();
-  const [pro, trialEnds, compass, hadAstronaut] = await Promise.all([
+  const [server, pro, trialEnds, compass, hadAstronaut, userRevoked] = await Promise.all([
+    fetchEntitlementsFromSupabase(),
     getItem(PRO_UNLOCK_KEY),
     getItem(PRO_TRIAL_ENDS_KEY),
     getItem(COMPASS_UNLOCK_KEY),
     getItem(HAD_ASTRONAUT_KEY),
+    getItem(USER_REVOKED_ASTRONAUT_KEY),
   ]);
-  const proUnlock = server?.pro_unlock || pro === 'true';
-  const compassUnlock = server?.compass_unlock || compass === 'true';
-  const hadAstronautSub = server?.had_astronaut_subscription || hadAstronaut === 'true';
-  const proTrialEnds = server?.pro_trial_ends ?? (trialEnds || null);
+  // 用户应用内取消 Astronaut 时，不因 server 或 restore 的旧数据覆盖
+  const forceProOff = userRevoked === 'true';
+  // 新用户（无 server 记录）一律从 Free 开始，不信任本地（避免 license tester 污染）
+  const isNewUser = server == null;
+  // 已有 server 记录时：以 server 为准，不合并本地（避免 restore/license tester 覆盖正确的 server 数据）
+  const proUnlock = forceProOff ? false : (isNewUser ? false : (server?.pro_unlock ?? false));
+  const compassUnlock = isNewUser ? false : (server?.compass_unlock ?? false);
+  const hadAstronautSub = isNewUser ? false : (server?.had_astronaut_subscription ?? false);
+  const proTrialEnds = forceProOff || isNewUser ? null : (server?.pro_trial_ends ?? trialEnds ?? null);
   await Promise.all([
     setItem(PRO_UNLOCK_KEY, proUnlock ? 'true' : 'false'),
     setItem(COMPASS_UNLOCK_KEY, compassUnlock ? 'true' : 'false'),
@@ -272,6 +296,7 @@ export async function clearEntitlementsOnLogout(): Promise<void> {
   await Promise.all([
     deleteItem(PRO_UNLOCK_KEY),
     deleteItem(HAD_ASTRONAUT_KEY),
+    deleteItem(USER_REVOKED_ASTRONAUT_KEY),
     deleteItem(PRO_TRIAL_ENDS_KEY),
     deleteItem(AI_SUB_KEY),
     deleteItem(COMPASS_UNLOCK_KEY),

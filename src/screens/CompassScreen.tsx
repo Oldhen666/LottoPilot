@@ -17,7 +17,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import { LOTTERY_DEFS } from '../constants/lotteries';
-import { checkCompassUsage, tryConsumeCompassUse } from '../services/entitlements';
+import { getEntitlements, type UserPlan } from '../services/entitlements';
+import { requiresRewardedAdGate, recordSuccessfulGenerate, setFreeGenerateCountAfterAd } from '../services/compassGenerateGate';
+import { showRewardedAdForGeneratePicks, REWARDED_AD_MESSAGES } from '../services/rewardedAdService';
 import { isIAPAvailable, getIAPProducts, formatPiratePrice } from '../services/iap';
 import { getCurrentUserEmail, onAuthStateChange } from '../services/supabase';
 import { getCompassPayload, getDrawsForCompass } from '../compass/compassCache';
@@ -49,8 +51,8 @@ export default function CompassScreen() {
   const [generateModalVisible, setGenerateModalVisible] = useState(false);
   const [generateParams, setGenerateParams] = useState<GenerateParams>({ ...DEFAULT_GENERATE_PARAMS });
   const [guideModalVisible, setGuideModalVisible] = useState(false);
-  const [compassBlocked, setCompassBlocked] = useState(false);
-  const [compassRemaining, setCompassRemaining] = useState<number | null>(null);
+  const [plan, setPlan] = useState<UserPlan>('free');
+  const [adGateModalVisible, setAdGateModalVisible] = useState(false);
   const [isSignedIn, setIsSignedIn] = useState<boolean | null>(null);
   const [lockFirstNumber, setLockFirstNumber] = useState(false);
   const [piratePrice, setPiratePrice] = useState('$3.49');
@@ -96,6 +98,10 @@ export default function CompassScreen() {
   );
 
   useEffect(() => {
+    getEntitlements().then((e) => setPlan(e.plan));
+  }, []);
+
+  useEffect(() => {
     if (isIAPAvailable()) {
       getIAPProducts().then(({ pirate }) => setPiratePrice(formatPiratePrice(pirate)));
     }
@@ -105,9 +111,6 @@ export default function CompassScreen() {
     setLoading(true);
     setPayload(null);
     setInsufficientHistory(false);
-    const { remaining, unlocked } = await checkCompassUsage();
-    setCompassRemaining(unlocked ? null : remaining);
-    setCompassBlocked(false);
     InteractionManager.runAfterInteractions(() => {
       getCompassPayload(lotteryId)
         .then((r) => {
@@ -124,9 +127,7 @@ export default function CompassScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      checkCompassUsage().then(({ remaining, unlocked }) => {
-        setCompassRemaining(unlocked ? null : remaining);
-      });
+      getEntitlements().then((e) => setPlan(e.plan));
     }, [])
   );
 
@@ -140,19 +141,9 @@ export default function CompassScreen() {
     setGenerateModalVisible(true);
   }, [currentPicks]);
 
-  const handleConfirmGenerate = useCallback(async () => {
-    setGenerateModalVisible(false);
+  const runGenerate = useCallback(async () => {
     const existing = currentPicks.filter((x) => x > 0);
     if (existing.length === 0) return;
-    if (isSignedIn === false) {
-      Alert.alert('Sign in required', 'Please sign in to use Generate number.');
-      return;
-    }
-    const consumed = await tryConsumeCompassUse();
-    if (!consumed) {
-      Alert.alert('Limit reached', `You've used all 10 free Compass uses. Upgrade to Pirate Plan (${piratePrice}) in Settings for unlimited.`);
-      return;
-    }
     setGenerating(true);
     try {
       const draws = await getDrawsForCompass(lotteryId);
@@ -166,15 +157,43 @@ export default function CompassScreen() {
         const merged = [...existing, ...remaining].sort((a, b) => a - b).slice(0, mainCount);
         setLines((prev) => [...prev, merged]);
         setCurrentPicks([]);
-        const { remaining: r } = await checkCompassUsage();
-        setCompassRemaining(r >= 0 ? r : null);
+        recordSuccessfulGenerate(plan, isSignedIn);
       }
     } catch {
       Alert.alert('Error', 'Could not generate numbers. Try again.');
     } finally {
       setGenerating(false);
     }
-  }, [lotteryId, currentPicks, mainCount, generateParams, payload, lockFirstNumber, isSignedIn, piratePrice]);
+  }, [lotteryId, currentPicks, mainCount, generateParams, payload, lockFirstNumber, plan, isSignedIn]);
+
+  const handleConfirmGenerate = useCallback(async () => {
+    const existing = currentPicks.filter((x) => x > 0);
+    if (existing.length === 0) return;
+    if (requiresRewardedAdGate(plan, isSignedIn)) {
+      setAdGateModalVisible(true);
+      return;
+    }
+    setGenerateModalVisible(false);
+    await runGenerate();
+  }, [lotteryId, currentPicks, mainCount, generateParams, payload, lockFirstNumber, plan, isSignedIn, runGenerate]);
+
+  const handleAdGateUpgrade = useCallback(() => {
+    setAdGateModalVisible(false);
+    setGenerateModalVisible(false);
+    (navigation as { navigate: (name: string) => void }).navigate('Settings');
+  }, [navigation]);
+
+  const handleAdGateKeepFree = useCallback(async () => {
+    const completed = await showRewardedAdForGeneratePicks();
+    if (!completed) {
+      Alert.alert('Ad required', REWARDED_AD_MESSAGES.adLoadFailed);
+      return;
+    }
+    setFreeGenerateCountAfterAd(); // 每次看完广告仅生成一组 pick
+    setAdGateModalVisible(false);
+    setGenerateModalVisible(false);
+    await runGenerate();
+  }, [runGenerate]);
 
   return (
     <ScrollView
@@ -191,6 +210,12 @@ export default function CompassScreen() {
       </View>
 
       <CompassUserGuideModal visible={guideModalVisible} onClose={() => setGuideModalVisible(false)} />
+
+      <RewardedAdGateModal
+        visible={adGateModalVisible}
+        onUpgrade={handleAdGateUpgrade}
+        onKeepFreePlan={handleAdGateKeepFree}
+      />
 
       <View style={styles.lotteryRow}>
         <Text style={styles.label}>Lottery</Text>
@@ -215,12 +240,11 @@ export default function CompassScreen() {
         picks={currentPicks}
         setPickAt={setPickAt}
         onGenerate={handleOpenGenerateModal}
-        onNavigateToSignIn={() => (navigation as { navigate: (s: string) => void }).navigate('Login')}
         onReset={() => { setLines([]); setCurrentPicks([]); }}
         generating={generating}
-        compassRemaining={compassRemaining}
-        isSignedIn={isSignedIn}
+        userPlan={plan}
         lockFirstNumber={lockFirstNumber}
+        onUpgradeToPirate={() => (navigation as { navigate: (s: string) => void }).navigate('Settings')}
         onLockFirstNumberChange={setLockFirstNumber}
       />
 
@@ -299,6 +323,35 @@ const GUIDE_STEPS = [
   { icon: 'sparkles' as const, title: '6. Generate number', text: 'After entering at least one number, tap Generate number. Adjust sliders (trend, position, shape) and confirm to fill remaining slots.' },
   { icon: 'refresh' as const, title: '7. Reset', text: 'Tap Reset to clear all numbers and start over.' },
 ];
+
+function RewardedAdGateModal({
+  visible,
+  onUpgrade,
+  onKeepFreePlan,
+}: {
+  visible: boolean;
+  onUpgrade: () => void;
+  onKeepFreePlan: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={styles.modalOverlay}>
+        <View style={styles.adGateModalContent}>
+          <Text style={styles.adGateModalTitle}>{REWARDED_AD_MESSAGES.modalTitle}</Text>
+          <Text style={styles.adGateModalMessage}>{REWARDED_AD_MESSAGES.modalMessage}</Text>
+          <View style={styles.adGateModalActions}>
+            <TouchableOpacity style={styles.adGateUpgradeBtn} onPress={onUpgrade}>
+              <Text style={styles.adGateUpgradeText}>{REWARDED_AD_MESSAGES.upgradeToPiratePlan}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.adGateKeepFreeBtn} onPress={onKeepFreePlan}>
+              <Text style={styles.adGateKeepFreeText}>{REWARDED_AD_MESSAGES.keepFreePlan}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 function CompassUserGuideModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   return (
@@ -414,6 +467,8 @@ function GenerateParamsModal({
   );
 }
 
+const UPGRADE_HINT = 'Upgrade to Pirate plan to remove ads';
+
 function PickSlots({
   mainCount,
   mainMin,
@@ -422,13 +477,12 @@ function PickSlots({
   picks,
   setPickAt,
   onGenerate,
-  onNavigateToSignIn,
   onReset,
   generating,
-  compassRemaining,
-  isSignedIn,
+  userPlan,
   lockFirstNumber,
   onLockFirstNumberChange,
+  onUpgradeToPirate,
 }: {
   mainCount: number;
   mainMin: number;
@@ -437,25 +491,24 @@ function PickSlots({
   picks: number[];
   setPickAt: (idx: number, value: number | '') => void;
   onGenerate?: () => void;
-  onNavigateToSignIn?: () => void;
   onReset?: () => void;
   generating?: boolean;
-  compassRemaining?: number | null;
-  isSignedIn?: boolean | null;
+  userPlan?: UserPlan;
   lockFirstNumber?: boolean;
   onLockFirstNumberChange?: (v: boolean) => void;
+  onUpgradeToPirate?: () => void;
 }) {
   const [editingSlot, setEditingSlot] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState('');
   const [showLockFirstHelp, setShowLockFirstHelp] = useState(false);
   const hint = `${mainCount} numbers (${mainMin}-${mainMax}, ascending, unique)`;
   const hasFirstPick = picks.some((x) => x > 0);
-  const showCountdown = compassRemaining !== null && compassRemaining >= 0;
   const maxFirstForLock = mainMax - mainCount + 1;
   const existingPicks = picks.filter((x) => x > 0);
   const minPick = existingPicks.length > 0 ? Math.min(...existingPicks) : 0;
   const lockFirstTooHigh = lockFirstNumber && hasFirstPick && minPick > maxFirstForLock;
-  const canGenerate = isSignedIn !== false && (compassRemaining === null || compassRemaining > 0) && !lockFirstTooHigh;
+  const isAdFree = userPlan === 'pirate' || userPlan === 'pirate_astronaut';
+  const canGenerate = !lockFirstTooHigh;
 
   const commitEdit = useCallback(
     (idx: number, txt: string) => {
@@ -563,12 +616,12 @@ function PickSlots({
             </TouchableOpacity>
           </Modal>
         )}
-        {hasFirstPick && (onGenerate || onNavigateToSignIn) && (
+        {onGenerate && (
           <View style={styles.generateWrap}>
-            {isSignedIn !== false && showCountdown && (
-              <Text style={styles.generateCountdown}>
-                {compassRemaining === 0 ? 'Upgrade to Pirate or Astronaut Plan for unlimited usage.' : `${compassRemaining} of 10 free uses left`}
-              </Text>
+            {!isAdFree && onUpgradeToPirate && (
+              <TouchableOpacity onPress={onUpgradeToPirate} style={styles.upgradeHintTouch}>
+                <Text style={styles.upgradeHintLink}>{UPGRADE_HINT}</Text>
+              </TouchableOpacity>
             )}
             {lockFirstTooHigh && (
               <Text style={styles.generateCountdown}>
@@ -576,16 +629,11 @@ function PickSlots({
               </Text>
             )}
             <TouchableOpacity
-              style={[styles.generateBtn, isSignedIn !== false && (!canGenerate || generating) && styles.generateBtnDisabled]}
-              onPress={isSignedIn === false && onNavigateToSignIn ? onNavigateToSignIn : onGenerate}
-              disabled={isSignedIn !== false && (!canGenerate || generating)}
+              style={[styles.generateBtn, (!canGenerate || generating) && styles.generateBtnDisabled]}
+              onPress={onGenerate}
+              disabled={!canGenerate || generating}
             >
-              {isSignedIn === false ? (
-                <>
-                  <Ionicons name="log-in-outline" size={18} color={COLORS.gold} style={styles.generateIcon} />
-                  <Text style={styles.generateBtnText}>Sign in to use Generate number</Text>
-                </>
-              ) : generating ? (
+              {generating ? (
                 <ActivityIndicator size="small" color={COLORS.gold} />
               ) : (
                 <>
@@ -825,7 +873,45 @@ const styles = StyleSheet.create({
   },
   generateHint: { color: COLORS.textMuted, fontSize: 13, marginBottom: 12 },
   generateWrap: { flexDirection: 'column', alignItems: 'flex-start', gap: 4 },
+  upgradeHintTouch: { marginBottom: 8 },
+  upgradeHintLink: { color: COLORS.gold, fontSize: 12, fontWeight: '600' },
   generateCountdown: { color: COLORS.warning, fontSize: 12, fontWeight: '600' },
+  adGateModalContent: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+  },
+  adGateModalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
+  adGateModalMessage: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 20 },
+  adGateModalActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'stretch', gap: 12 },
+  adGateUpgradeBtn: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  adGateUpgradeText: { color: COLORS.bg, fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  adGateKeepFreeBtn: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.gray700,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  adGateKeepFreeText: { color: COLORS.textMuted, fontSize: 13, fontWeight: '600', textAlign: 'center' },
   pickSlotInput: {
     color: COLORS.text,
     fontSize: 16,

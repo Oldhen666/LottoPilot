@@ -16,7 +16,7 @@ import {
   type Purchase,
   type Product,
 } from 'react-native-iap';
-import { setCompassUnlocked, setProUnlocked, setHadAstronautSubscription, getHadAstronautSubscription } from './entitlements';
+import { setCompassUnlocked, setProUnlocked, setHadAstronautSubscription, getHadAstronautSubscription, getUserRevokedAstronautFlag, clearUserRevokedAstronautFlag } from './entitlements';
 
 /** 商品 ID - 必须与 Google Play Console 中创建的一致 */
 export const IAP_PRODUCT_IDS = {
@@ -84,13 +84,16 @@ export function setupPurchaseListeners(onSuccess: (purchase: Purchase) => void, 
   });
 }
 
-async function handlePurchase(purchase: Purchase): Promise<void> {
+/** @param fromRestore - true 时仅更新本地不 sync，由 syncLocalEntitlementsToServer 以 server 为准（避免 license tester 污染） */
+async function handlePurchase(purchase: Purchase, fromRestore = false): Promise<void> {
+  const noSync = fromRestore ? { sync: false } : undefined;
   const productId = purchase.productId ?? purchase.productIds?.[0];
   if (productId === IAP_PRODUCT_IDS.PIRATE) {
-    await setCompassUnlocked(true);
+    await setCompassUnlocked(true, noSync);
   } else if (productId === IAP_PRODUCT_IDS.ASTRONAUT_MONTHLY) {
-    await setProUnlocked(true);
-    await setHadAstronautSubscription();
+    await clearUserRevokedAstronautFlag(); // 重新购买时清除取消标记
+    await setProUnlocked(true, noSync);
+    await setHadAstronautSubscription(noSync);
   }
   purchaseSuccessCallbacks.forEach((cb) => cb());
 }
@@ -209,13 +212,17 @@ export async function purchaseAstronaut(): Promise<void> {
   }
 }
 
-/** 恢复购买（检查已有购买并恢复权益） */
-export async function restoreIAPPurchases(): Promise<boolean> {
+/** 恢复购买（检查已有购买并恢复权益）。若用户曾在应用内取消 Astronaut，则跳过 Astronaut 恢复（除非传入 forceRestore=true）。 */
+export async function restoreIAPPurchases(forceRestore = false): Promise<boolean> {
   if (!isIAPAvailable()) return false;
   try {
     const purchases = await getAvailablePurchases();
+    const skipAstronaut = !forceRestore && (await getUserRevokedAstronautFlag());
+    const fromRestore = !forceRestore; // 仅登录时自动 restore 不 sync，用户主动 Restore 则正常 sync
     for (const p of purchases) {
-      await handlePurchase(p);
+      const productId = p.productId ?? p.productIds?.[0];
+      if (productId === IAP_PRODUCT_IDS.ASTRONAUT_MONTHLY && skipAstronaut) continue;
+      await handlePurchase(p, fromRestore);
     }
     return true;
   } catch {

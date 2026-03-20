@@ -42,6 +42,13 @@ module.exports = {
       policy: 'appVersion',
     },
     plugins: [
+      [
+        'react-native-google-mobile-ads',
+        {
+          androidAppId: 'ca-app-pub-3940256099942544~3347511713',
+          iosAppId: 'ca-app-pub-3940256099942544~1458002511',
+        },
+      ],
       'react-native-iap',
       ['expo-image-picker', {
         photosPermission: 'Allow LottoPilot to access your photos to scan lottery tickets',

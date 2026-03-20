@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS, SPACING } from '../constants/theme';
 import { getCurrentUserEmail, notifyAuthStateChange, onAuthStateChange, signOut } from '../services/supabase';
-import { getEntitlements, setProUnlocked, setProTrialOneMonth, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, claimAdminIfEligible, syncLocalEntitlementsToServer, ADMIN_EMAILS, PLAN_LABELS, type UserPlan } from '../services/entitlements';
+import { getEntitlements, setProUnlocked, setProTrialOneMonth, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, claimAdminIfEligible, syncLocalEntitlementsToServer, clearUserRevokedAstronautFlag, ADMIN_EMAILS, PLAN_LABELS, type UserPlan } from '../services/entitlements';
 import { isIAPAvailable, purchasePirate, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatPiratePrice, formatAstronautPrice, openSubscriptionManagement } from '../services/iap';
 import {
   DISCLAIMER_SHORT,
@@ -190,7 +190,8 @@ export default function SettingsScreen() {
   const handleRestorePurchases = async () => {
     if (!isIAPAvailable()) return;
     try {
-      const ok = await restoreIAPPurchases();
+      await clearUserRevokedAstronautFlag(); // 用户主动 Restore 时清除取消标记，完整恢复
+      const ok = await restoreIAPPurchases(true);
       if (ok) {
         const ent = await getEntitlements();
         setPlan(ent.plan);
@@ -222,6 +223,8 @@ export default function SettingsScreen() {
     await revokeAstronautSubscription();
     const ent = await getEntitlements();
     setPlan(ent.plan);
+    setHadAstronautSubscription(ent.hadAstronautSubscription);
+    notifyAuthStateChange();
   };
 
   const showAlert = (title: string, message: string) => {
@@ -327,7 +330,7 @@ export default function SettingsScreen() {
               <Text style={styles.planName}>Pirate Plan</Text>
               {plan === 'pirate' && <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />}
             </View>
-            <Text style={styles.planDesc}>Unlimited Compass. Strategy Lab: Start 1-month free trial. {piratePrice} one-time.</Text>
+            <Text style={styles.planDesc}>Unlimited Compass usage + Ad-free experience. Strategy Lab: Start 1-month free trial. {piratePrice} one-time.</Text>
             {plan === 'free' && (
               <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradePirate}>
                 <Text style={styles.planUpgradeBtnText}>Upgrade to Pirate {piratePrice}</Text>
@@ -523,7 +526,7 @@ export default function SettingsScreen() {
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.modalContent}>
             <Text style={styles.modalTitle}>Cancel subscription?</Text>
             <Text style={styles.cancelSubModalMsg}>
-              Strategy Lab Pro will be revoked. Pirate Plan (if purchased) will remain. Are you sure?
+              Strategy Lab Pro access will be revoked. Pirate Plan (if purchased) will remain. To stop billing, also cancel in Google Play subscription management.
             </Text>
             <Text style={styles.cancelSubReasonLabel}>Why are you canceling? (optional)</Text>
             <ScrollView style={styles.cancelSubReasonScroll} showsVerticalScrollIndicator={false}>
@@ -542,8 +545,19 @@ export default function SettingsScreen() {
               <TouchableOpacity style={styles.cancelSubKeepBtn} onPress={() => setCancelSubModalVisible(false)}>
                 <Text style={styles.cancelSubKeepBtnText}>Keep subscription</Text>
               </TouchableOpacity>
+              {isIAPAvailable() && (
+                <TouchableOpacity
+                  style={styles.cancelSubManageBtn}
+                  onPress={() => {
+                    setCancelSubModalVisible(false);
+                    openSubscriptionManagement();
+                  }}
+                >
+                  <Text style={styles.cancelSubManageBtnText}>Manage in Google Play</Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity style={styles.cancelSubConfirmBtn} onPress={handleConfirmCancelSubscription}>
-                <Text style={styles.cancelSubConfirmBtnText}>Cancel subscription</Text>
+                <Text style={styles.cancelSubConfirmBtnText}>Revoke access</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
@@ -705,6 +719,14 @@ const styles = StyleSheet.create({
     borderColor: COLORS.textMuted,
   },
   cancelSubKeepBtnText: { color: COLORS.text, fontWeight: '600', fontSize: 16 },
+  cancelSubManageBtn: {
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  cancelSubManageBtnText: { color: COLORS.gold, fontWeight: '600', fontSize: 16 },
   cancelSubConfirmBtn: {
     backgroundColor: 'transparent',
     padding: 14,

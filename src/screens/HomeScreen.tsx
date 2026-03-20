@@ -15,6 +15,8 @@ import { useLatestDraw, invalidateDrawsCache } from '../hooks/useDraws';
 import { onAppActiveRefetch } from '../utils/appActiveRefetch';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import { COLORS, SPACING } from '../constants/theme';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { useEntitlements } from '../hooks/useEntitlements';
 import type { LotteryId } from '../types/lottery';
 
 const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
@@ -28,6 +30,7 @@ interface Props {
 
 export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTicket, onViewDrawHistory }: Props) {
   const insets = useSafeAreaInsets();
+  const { plan } = useEntitlements();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(1);
   const { draw, loading, error } = useLatestDraw(selectedLottery, refetchTrigger);
@@ -148,6 +151,8 @@ export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTi
         <Ionicons name="list" size={20} color={COLORS.textSecondary} style={styles.btnIcon} />
         <Text style={styles.secondaryBtnText}>View Draw History</Text>
       </TouchableOpacity>
+
+      <BannerAdPlaceholder testId="home" userPlan={plan} />
     </ScrollView>
   );
 }
