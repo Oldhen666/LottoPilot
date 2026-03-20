@@ -6,7 +6,7 @@
 
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { fetchEntitlementsFromSupabase, upsertEntitlementsToSupabase } from './supabase';
+import { fetchEntitlementsFromSupabase, hasSessionInStorage, upsertEntitlementsToSupabase } from './supabase';
 
 const PRO_UNLOCK_KEY = 'lottopilot_pro_unlocked';
 const PRO_TRIAL_ENDS_KEY = 'lottopilot_pro_trial_ends';
@@ -91,13 +91,28 @@ function entitlementsFromLocal(
 const HAD_ASTRONAUT_KEY = 'lottopilot_had_astronaut_subscription';
 
 export async function getEntitlements(): Promise<Entitlements> {
-  const server = await fetchEntitlementsFromSupabase();
+  const [server, pro, trialEnds, ai, compass, hadAstronaut] = await Promise.all([
+    fetchEntitlementsFromSupabase(),
+    getItem(PRO_UNLOCK_KEY),
+    getItem(PRO_TRIAL_ENDS_KEY),
+    getItem(AI_SUB_KEY),
+    getItem(COMPASS_UNLOCK_KEY),
+    getItem(HAD_ASTRONAUT_KEY),
+  ]);
+
+  const localPro = pro === 'true';
+  const localCompass = compass === 'true';
+  const localHadAstronaut = hadAstronaut === 'true';
+  const localTrialEnd = trialEnds ? new Date(trialEnds).getTime() : 0;
+  const localProTrialActive = localTrialEnd > Date.now();
+
   if (server) {
-    const proTrialEnd = server.pro_trial_ends ? new Date(server.pro_trial_ends).getTime() : 0;
-    const proTrialActive = proTrialEnd > Date.now();
-    const proUnlocked = server.pro_unlock || proTrialActive;
-    const compassUnlocked = server.compass_unlock;
-    const hadAstronautSubscription = server.had_astronaut_subscription;
+    const serverProTrialEnd = server.pro_trial_ends ? new Date(server.pro_trial_ends).getTime() : 0;
+    const serverProTrialActive = serverProTrialEnd > Date.now();
+    const proUnlocked = server.pro_unlock || serverProTrialActive || localPro || localProTrialActive;
+    const compassUnlocked = server.compass_unlock || localCompass;
+    const hadAstronautSubscription = server.had_astronaut_subscription || localHadAstronaut;
+    const proTrialEnds = server.pro_trial_ends ?? trialEnds ?? null;
 
     const ent: Entitlements = {
       proUnlocked,
@@ -108,21 +123,18 @@ export async function getEntitlements(): Promise<Entitlements> {
     };
     await Promise.all([
       setItem(PRO_UNLOCK_KEY, proUnlocked ? 'true' : 'false'),
-      setItem(PRO_TRIAL_ENDS_KEY, server.pro_trial_ends ?? ''),
+      setItem(PRO_TRIAL_ENDS_KEY, proTrialEnds ?? ''),
       setItem(COMPASS_UNLOCK_KEY, compassUnlocked ? 'true' : 'false'),
       setItem(HAD_ASTRONAUT_KEY, hadAstronautSubscription ? 'true' : 'false'),
     ]);
     return ent;
   }
 
-  const [pro, trialEnds, ai, compass, hadAstronaut] = await Promise.all([
-    getItem(PRO_UNLOCK_KEY),
-    getItem(PRO_TRIAL_ENDS_KEY),
-    getItem(AI_SUB_KEY),
-    getItem(COMPASS_UNLOCK_KEY),
-    getItem(HAD_ASTRONAUT_KEY),
-  ]);
-  return entitlementsFromLocal(pro, trialEnds, ai, compass, hadAstronaut === 'true');
+  if (!hasSessionInStorage()) {
+    return entitlementsFromLocal(null, null, null, null, false);
+  }
+
+  return entitlementsFromLocal(pro, trialEnds, ai, compass, localHadAstronaut);
 }
 
 /** If email is admin, unlock all permissions. */
@@ -228,9 +240,31 @@ export async function revokeAstronautSubscription(): Promise<void> {
   await setProUnlocked(false);
 }
 
-/** 登录后调用：将本地权益同步到 Supabase，避免购买时未登录导致服务端无记录 */
+/** 登录后调用：合并服务端与本地权益后同步，避免用本地空状态覆盖服务端已有订阅 */
 export async function syncLocalEntitlementsToServer(): Promise<void> {
-  await syncEntitlementsToSupabase();
+  const server = await fetchEntitlementsFromSupabase();
+  const [pro, trialEnds, compass, hadAstronaut] = await Promise.all([
+    getItem(PRO_UNLOCK_KEY),
+    getItem(PRO_TRIAL_ENDS_KEY),
+    getItem(COMPASS_UNLOCK_KEY),
+    getItem(HAD_ASTRONAUT_KEY),
+  ]);
+  const proUnlock = server?.pro_unlock || pro === 'true';
+  const compassUnlock = server?.compass_unlock || compass === 'true';
+  const hadAstronautSub = server?.had_astronaut_subscription || hadAstronaut === 'true';
+  const proTrialEnds = server?.pro_trial_ends ?? (trialEnds || null);
+  await Promise.all([
+    setItem(PRO_UNLOCK_KEY, proUnlock ? 'true' : 'false'),
+    setItem(COMPASS_UNLOCK_KEY, compassUnlock ? 'true' : 'false'),
+    setItem(HAD_ASTRONAUT_KEY, hadAstronautSub ? 'true' : 'false'),
+    setItem(PRO_TRIAL_ENDS_KEY, proTrialEnds ?? ''),
+  ]);
+  await upsertEntitlementsToSupabase({
+    compass_unlock: compassUnlock,
+    pro_unlock: proUnlock,
+    pro_trial_ends: proTrialEnds,
+    had_astronaut_subscription: hadAstronautSub,
+  });
 }
 
 /** Clear all subscription/privilege state. Call on logout so next user or re-login starts as free. */

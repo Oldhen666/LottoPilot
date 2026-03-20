@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { fetchDraws, fetchLatestDraw, isAuthError, isSupabaseConfigured, resetSupabaseAndClearStorage } from '../services/supabase';
+import { fetchDraws, fetchLatestDraw, isSupabaseConfigured } from '../services/supabase';
 import { getDrawsFromCache, upsertDrawsCache } from '../db/drawsCache';
 import type { Draw } from '../types/lottery';
 
@@ -56,8 +56,8 @@ export async function preloadDraws(lotteryId: string): Promise<void> {
     }
     const data = await fetchDraws(lotteryId, 100);
     setCachedDraws(lotteryId, data);
-  } catch (e) {
-    if (isAuthError(e)) await resetSupabaseAndClearStorage();
+  } catch {
+    /* draws use anon key - no session clear on error */
   }
 }
 
@@ -97,7 +97,6 @@ export function useDraws(lotteryId: string | null, refetchTrigger?: number) {
           }
         })
         .catch(async (e) => {
-          if (isAuthError(e)) await resetSupabaseAndClearStorage();
           try {
             const retry = await fetchDraws(lotteryId, 100);
             if (retry?.length) {
@@ -160,7 +159,6 @@ export function useDraws(lotteryId: string | null, refetchTrigger?: number) {
       })
       .catch(async (e) => {
         const msg = e?.message || String(e);
-        if (isAuthError(e)) await resetSupabaseAndClearStorage();
         try {
           const retry = await fetchDraws(lotteryId, 100);
           if (retry?.length) {
@@ -270,7 +268,6 @@ export function useLatestDraw(lotteryId: string | null, refetchTrigger?: number)
         .catch((e) => {
           if (__DEV__) console.log('[useLatestDraw] fetchLatestDraw error', e?.message || e);
           if (cancelled) return;
-          if (isAuthError(e)) resetSupabaseAndClearStorage();
           const msg = e?.message || String(e);
           const isNetworkErr = /fetch|timeout|network|TypeError/i.test(msg);
           setError(isNetworkErr

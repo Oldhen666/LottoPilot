@@ -1,8 +1,8 @@
 /**
  * Load prize rule sets and tiers from Supabase
- * Uses shared client to avoid multiple GoTrueClient instances.
+ * Uses direct REST to avoid Supabase client blocking.
  */
-import { getSupabaseClient } from './supabase';
+import { loadRuleSetDirect } from './supabase';
 import type { PrizeRuleSet, PrizeTier, AddOnRule } from '../types/jurisdiction';
 
 /** Get active rule set for game + jurisdiction, effective on draw_date */
@@ -11,42 +11,12 @@ export async function loadRuleSet(
   jurisdictionCode: string,
   drawDate: string
 ): Promise<{ ruleSet: PrizeRuleSet; tiers: PrizeTier[]; addOns: AddOnRule[] } | null> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-
-  const { data: sets, error: setsErr } = await supabase
-    .from('prize_rule_sets')
-    .select('*')
-    .eq('game_code', gameCode)
-    .eq('jurisdiction_code', jurisdictionCode)
-    .eq('is_active', true)
-    .lte('effective_from', drawDate)
-    .or(`effective_to.is.null,effective_to.gte.${drawDate}`)
-    .order('effective_from', { ascending: false })
-    .limit(1);
-
-  if (setsErr || !sets?.length) return null;
-  const ruleSet = sets[0] as PrizeRuleSet;
-
-  const { data: tiers, error: tiersErr } = await supabase
-    .from('prize_tiers')
-    .select('*')
-    .eq('rule_set_id', ruleSet.id)
-    .order('sort_order', { ascending: true });
-
-  if (tiersErr) return null;
-
-  const { data: addOns, error: addOnsErr } = await supabase
-    .from('add_on_rules')
-    .select('*')
-    .eq('rule_set_id', ruleSet.id);
-
-  if (addOnsErr) return null;
-
+  const result = await loadRuleSetDirect(gameCode, jurisdictionCode, drawDate);
+  if (!result) return null;
   return {
-    ruleSet,
-    tiers: (tiers || []) as PrizeTier[],
-    addOns: (addOns || []) as AddOnRule[],
+    ruleSet: result.ruleSet as PrizeRuleSet,
+    tiers: result.tiers as PrizeTier[],
+    addOns: result.addOns as AddOnRule[],
   };
 }
 

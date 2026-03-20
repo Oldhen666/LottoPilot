@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import fetchRetry from 'fetch-retry';
 import type { Draw } from '../types/lottery';
+import type { AddOnCatalogItem } from '../types/addOn';
 
 /** Per-request timeout so hanging fetches throw and trigger retry (default fetch has no timeout) */
 const REQUEST_TIMEOUT_MS = 20000;
@@ -38,6 +39,7 @@ const fetchWithRetry = fetchRetry(fetchWithTimeout, {
 
 const REMEMBER_ME_KEY = 'lottopilot_remember_me';
 const LAST_LOGIN_EMAIL_KEY = 'lottopilot_last_login_email';
+const AUTH_TIMEOUT_MS = 30000;
 
 /** Use SQLite-backed localStorage (polyfilled in index.ts) - survives OTA updates better than AsyncStorage */
 function getStorage(): Storage | null {
@@ -98,6 +100,32 @@ function sanitizeStoredSession(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Read session from storage without Supabase client (avoids auth blocking). Returns { userId, accessToken, email } or null. */
+function getSessionFromStorage(): { userId: string; accessToken: string; email?: string } | null {
+  const storage = getStorage();
+  if (!storage || storage.getItem(REMEMBER_ME_KEY) === 'false') return null;
+  try {
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (!k || (!k.startsWith('sb-') && !k.includes('-auth-token'))) continue;
+      const raw = sanitizeStoredSession(storage.getItem(k));
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const session = (parsed.currentSession ?? parsed.session ?? parsed) as Record<string, unknown> | undefined;
+      if (!session) continue;
+      const user = (session.user ?? session) as { id?: string; email?: string } | undefined;
+      const accessToken = (session.access_token ?? session.accessToken) as string | undefined;
+      const userId = user?.id ?? (session as { user_id?: string }).user_id;
+      if (userId && accessToken) {
+        return { userId: String(userId), accessToken, email: user?.email };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 /** One-time migration: copy Supabase session from AsyncStorage to SQLite localStorage (for users updating from old version) */
@@ -217,6 +245,7 @@ export async function resetSupabaseAndClearStorage(): Promise<void> {
   await clearSupabaseAuthStorage();
   const { setCacheClearFlag } = await import('../utils/storageVersionCheck');
   setCacheClearFlag();
+  notifyAuthStateChange();
 }
 
 /** True if error indicates auth/session problem (401, JWT invalid). Do NOT clear on timeout/network errors. */
@@ -241,6 +270,11 @@ export function isSupabaseConfigured(): boolean {
   return Boolean(url && key);
 }
 
+/** Sync check: does storage have a valid session? (no client, no auth blocking) */
+export function hasSessionInStorage(): boolean {
+  return getSessionFromStorage() !== null;
+}
+
 /** Test Supabase connection. Returns { ok, message } for Settings diagnostics. */
 export async function testSupabaseConnection(): Promise<{ ok: boolean; message: string }> {
   const { url, key } = getSupabaseConfig();
@@ -263,20 +297,36 @@ export function preWarmSupabaseClient(): void {
   getSupabase();
 }
 
-/** Get current signed-in user id (Supabase Auth). Returns null if not signed in. */
-export async function getCurrentUserId(): Promise<string | null> {
+const AUTH_SESSION_TIMEOUT_MS = 10000;
+
+async function getSessionWithTimeout(): Promise<{ session: { user?: { id?: string; email?: string } } | null } | null> {
   const supabase = getSupabase();
   if (!supabase) return null;
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.user?.id ?? null;
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Session timeout')), AUTH_SESSION_TIMEOUT_MS)
+  );
+  try {
+    const { data } = await Promise.race([supabase.auth.getSession(), timeout]);
+    return data;
+  } catch {
+    return null;
+  }
 }
 
-/** Get current signed-in user email (Supabase Auth). Returns null if not signed in. */
+/** Get current signed-in user id. Tries storage first (fast, no client), then client. */
+export async function getCurrentUserId(): Promise<string | null> {
+  const fromStorage = getSessionFromStorage();
+  if (fromStorage?.userId) return fromStorage.userId;
+  const data = await getSessionWithTimeout();
+  return data?.session?.user?.id ?? null;
+}
+
+/** Get current signed-in user email. Tries storage first (fast, no client), then client. */
 export async function getCurrentUserEmail(): Promise<string | null> {
-  const supabase = getSupabase();
-  if (!supabase) return null;
-  const { data: { session } } = await supabase.auth.getSession();
-  const email = session?.user?.email;
+  const fromStorage = getSessionFromStorage();
+  if (fromStorage?.email) return fromStorage.email.trim().toLowerCase();
+  const data = await getSessionWithTimeout();
+  const email = data?.session?.user?.email;
   return email ? email.trim().toLowerCase() : null;
 }
 
@@ -322,10 +372,60 @@ export async function validateSessionOnStartup(): Promise<void> {
   }
 }
 
-/** Sign in with email and password. */
+/** Direct REST: sign in with password (avoids Supabase client blocking). */
+async function signInDirect(email: string, password: string): Promise<{ error: string | null }> {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return { error: 'Supabase not configured' };
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), AUTH_TIMEOUT_MS);
+  try {
+    const res = await _nativeFetch(`${url}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ grant_type: 'password', email: email.trim(), password }),
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    const data = (await res.json()) as { access_token?: string; user?: { id: string; email?: string }; error_description?: string; msg?: string };
+    if (!res.ok) {
+      return { error: data?.error_description ?? data?.msg ?? `HTTP ${res.status}` };
+    }
+    if (!data?.access_token || !data?.user?.id) {
+      return { error: 'Invalid response' };
+    }
+    const session = {
+      access_token: data.access_token,
+      refresh_token: (data as { refresh_token?: string }).refresh_token ?? '',
+      expires_at: (data as { expires_at?: number }).expires_at ?? Math.floor(Date.now() / 1000) + 3600,
+      user: data.user,
+    };
+    const storage = getStorage();
+    if (storage && storage.getItem(REMEMBER_ME_KEY) !== 'false') {
+      const { url: u } = getSupabaseConfig();
+      const ref = u?.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1] ?? 'default';
+      storage.setItem(`sb-${ref}-auth-token`, JSON.stringify({ currentSession: session, expiresAt: session.expires_at * 1000 }));
+    }
+    try {
+      const supabase = getSupabase();
+      if (supabase) await supabase.auth.setSession({ access_token: session.access_token, refresh_token: session.refresh_token });
+    } catch {
+      /* client may fail - storage already written */
+    }
+    notifyAuthStateChange();
+    return { error: null };
+  } catch (e) {
+    return { error: (e as Error)?.message ?? 'Sign in failed' };
+  }
+}
+
+/** Sign in with email and password. Tries direct REST first (no client blocking), falls back to client. */
 export async function signIn(email: string, password: string): Promise<{ error: string | null }> {
+  const direct = await signInDirect(email, password);
+  if (direct.error === null) return direct;
   const supabase = getSupabase();
-  if (!supabase) return { error: 'Supabase not configured' };
+  if (!supabase) return direct;
   const signInPromise = supabase.auth.signInWithPassword({ email: email.trim(), password });
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Request timed out. Check your connection and try again.')), AUTH_TIMEOUT_MS)
@@ -334,11 +434,9 @@ export async function signIn(email: string, password: string): Promise<{ error: 
     const { error } = await Promise.race([signInPromise, timeoutPromise]);
     return { error: error?.message ?? null };
   } catch (e) {
-    return { error: (e as Error)?.message ?? 'Sign in failed' };
+    return { error: (e as Error)?.message ?? direct.error ?? 'Sign in failed' };
   }
 }
-
-const AUTH_TIMEOUT_MS = 30000;
 
 /** Get redirect URL for email confirmation / magic link.
  * Use EXPO_PUBLIC_AUTH_CALLBACK_URL (HTTPS) for native - opens in browser first, then redirects to app.
@@ -410,23 +508,55 @@ export async function resetPasswordForEmail(email: string): Promise<{ error: str
   return { error: error?.message ?? null };
 }
 
-/** Sign out current user (Supabase Auth). Also clears local subscription/privilege state. */
+/** Sign out current user. Clears storage first (no client), then client if available. */
 export async function signOut(): Promise<void> {
   const { clearEntitlementsOnLogout } = await import('./entitlements');
   await clearEntitlementsOnLogout();
-  const supabase = getSupabase();
-  if (supabase) await supabase.auth.signOut();
+  await clearSupabaseAuthStorage();
+  notifyAuthStateChange();
+  try {
+    const supabase = getSupabase();
+    if (supabase) await supabase.auth.signOut();
+  } catch {
+    /* client may block - storage already cleared */
+  }
 }
 
-/** Subscribe to auth state changes. Returns unsubscribe function. */
+const _authListeners: Array<() => void> = [];
+/** Notify auth state changed (e.g. after signInDirect). Call getCurrentUserEmail in listener. Also use after entitlements sync to refresh UI. */
+export function notifyAuthStateChange(): void {
+  _authListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+/** Subscribe to auth state changes. Uses storage-first getCurrentUserEmail (no client blocking). Returns unsubscribe function. */
 export function onAuthStateChange(callback: (email: string | null) => void): () => void {
-  const supabase = getSupabase();
-  if (!supabase) return () => {};
-  const { data: { subscription } } = supabase.auth.onAuthStateChange(async () => {
+  const run = async () => {
     const email = await getCurrentUserEmail();
     callback(email);
-  });
-  return () => subscription.unsubscribe();
+  };
+  _authListeners.push(run);
+  void run();
+  let unsubClient: (() => void) | null = null;
+  try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(run);
+      unsubClient = () => subscription.unsubscribe();
+    }
+  } catch {
+    /* client may block - we still have our listener */
+  }
+  return () => {
+    const i = _authListeners.indexOf(run);
+    if (i >= 0) _authListeners.splice(i, 1);
+    unsubClient?.();
+  };
 }
 
 /** Minimal columns (001 schema) - avoids errors if migrations 003+ not applied */
@@ -554,36 +684,10 @@ export async function fetchLatestDraw(lotteryId: string): Promise<Draw | null> {
   return draws[0] || null;
 }
 
-/** Fetch many draws for Compass (historical analysis). Limit up to 2000. */
+/** Fetch many draws for Compass (historical analysis). Limit up to 2000. Uses direct REST like fetchDraws. */
 export async function fetchDrawsForCompass(lotteryId: string, limit = 500): Promise<Draw[]> {
-  const doFetch = async (sb: NonNullable<ReturnType<typeof getSupabase>>) => {
-    let { data, error } = await sb
-      .from('draws')
-      .select(DRAWS_SELECT_FULL)
-      .eq('lottery_id', lotteryId)
-      .order('draw_date', { ascending: false })
-      .limit(Math.min(limit, 2000));
-    if (error && (error.message?.includes('column') || error.code === 'PGRST204')) {
-      const retry = await sb.from('draws').select(DRAWS_SELECT_MIN).eq('lottery_id', lotteryId).order('draw_date', { ascending: false }).limit(Math.min(limit, 2000));
-      data = retry.data;
-      error = retry.error;
-    }
-    if (error) throw error;
-    const rows = (data || []) as Record<string, unknown>[];
-    return rows.map((r) => postProcessDraw(normalizeDraw(r), lotteryId));
-  };
-  let supabase = getSupabase();
-  if (!supabase) return [];
-  try {
-    return await withCompassTimeout(doFetch(supabase));
-  } catch (e) {
-    if (isAuthError(e)) {
-      await resetSupabaseAndClearStorage();
-      supabase = getSupabase();
-    }
-    if (!supabase) throw e;
-    return withCompassTimeout(doFetch(supabase));
-  }
+  const capped = Math.min(limit, 2000);
+  return withCompassTimeout(fetchDrawsDirect(lotteryId, capped));
 }
 
 function withCompassTimeout<T>(p: Promise<T>): Promise<T> {
@@ -595,73 +699,169 @@ function withCompassTimeout<T>(p: Promise<T>): Promise<T> {
   ]);
 }
 
-/** Fetch pre-computed Compass snapshot from Supabase (updated daily with scraper). */
+/** Fetch pre-computed Compass snapshot. Uses direct REST to avoid client blocking. */
 export async function fetchCompassSnapshot(gameCode: string): Promise<{
   payload_json: unknown;
   computed_at: string;
 } | null> {
-  const doFetch = async (sb: NonNullable<ReturnType<typeof getSupabase>>) => {
-    const { data, error } = await sb.from('compass_snapshots').select('payload_json, computed_at').eq('game_code', gameCode).maybeSingle();
-    if (error) throw error;
-    return data as { payload_json: unknown; computed_at: string } | null;
-  };
-  let supabase = getSupabase();
-  if (!supabase) return null;
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return null;
+  const restUrl = `${url}/rest/v1/compass_snapshots?game_code=eq.${encodeURIComponent(gameCode)}&select=payload_json,computed_at&limit=1`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await withCompassTimeout(doFetch(supabase));
-  } catch (e) {
-    if (isAuthError(e)) {
-      await resetSupabaseAndClearStorage();
-      supabase = getSupabase();
-    }
-    if (!supabase) throw e;
-    return withCompassTimeout(doFetch(supabase));
+    const res = await _nativeFetch(restUrl, {
+      method: 'GET',
+      headers: { apikey: key, Accept: 'application/json' },
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (!res.ok) return null;
+    const rows = (await res.json()) as { payload_json: unknown; computed_at: string }[];
+    return rows[0] ?? null;
+  } catch {
+    return null;
   }
 }
 
+/** Fetch single draw by date. Uses direct REST to avoid client blocking. */
 export async function fetchDrawByDate(lotteryId: string, drawDate: string): Promise<Draw | null> {
-  const doFetch = async (sb: NonNullable<ReturnType<typeof getSupabase>>) => {
-    let { data, error } = await sb.from('draws').select(DRAWS_SELECT_FULL).eq('lottery_id', lotteryId).eq('draw_date', drawDate).maybeSingle();
-    if (error && (error.message?.includes('column') || error.code === 'PGRST204')) {
-      const retry = await sb.from('draws').select(DRAWS_SELECT_MIN).eq('lottery_id', lotteryId).eq('draw_date', drawDate).maybeSingle();
-      data = retry.data;
-      error = retry.error;
-    }
-    if (error) throw error;
-    if (!data) return null;
-    return postProcessDraw(normalizeDraw(data as Record<string, unknown>), lotteryId);
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return null;
+  const headers = { apikey: key, Accept: 'application/json' };
+  const doFetch = async (select: string) => {
+    const sel = select.replace(/\s+/g, '');
+    const restUrl = `${url}/rest/v1/draws?lottery_id=eq.${encodeURIComponent(lotteryId)}&draw_date=eq.${encodeURIComponent(drawDate)}&select=${encodeURIComponent(sel)}&limit=1`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const res = await _nativeFetch(restUrl, { method: 'GET', headers, signal: ctrl.signal }).finally(() => clearTimeout(t));
+    return res;
   };
-  let supabase = getSupabase();
-  if (!supabase) return null;
+  let res = await doFetch(DRAWS_SELECT_FULL);
+  if (!res.ok && res.status === 400) res = await doFetch(DRAWS_SELECT_MIN);
+  if (!res.ok) return null;
+  const rows = (await res.json()) as Record<string, unknown>[];
+  if (!rows?.[0]) return null;
+  return postProcessDraw(normalizeDraw(rows[0]), lotteryId);
+}
+
+/** Direct REST: add_on_catalog. Avoids Supabase client blocking. */
+export async function fetchAddOnCatalogDirect(
+  gameCode: string,
+  jurisdictionCode: string
+): Promise<AddOnCatalogItem[]> {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return [];
+  const jCode = jurisdictionCode || 'CA-ON';
+  const country = jCode.split('-')[0];
+  const nationalCode = `${country}-NATIONAL`;
+  const headers = { apikey: key, Accept: 'application/json' };
+  const fetchOne = async (jc: string) => {
+    const restUrl = `${url}/rest/v1/add_on_catalog?game_code=eq.${encodeURIComponent(gameCode)}&jurisdiction_code=eq.${encodeURIComponent(jc)}&is_enabled=eq.true&select=*`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const res = await _nativeFetch(restUrl, { method: 'GET', headers, signal: ctrl.signal }).finally(() => clearTimeout(t));
+    if (!res.ok) return [];
+    return (await res.json()) as AddOnCatalogItem[];
+  };
+  const [exactData, nationalData] = await Promise.all([fetchOne(jCode), fetchOne(nationalCode)]);
+  const byCode = new Map<string, AddOnCatalogItem>();
+  for (const i of exactData) byCode.set(i.add_on_code, i);
+  for (const i of nationalData) if (!byCode.has(i.add_on_code)) byCode.set(i.add_on_code, i);
+  return Array.from(byCode.values());
+}
+
+/** Direct REST: prize_rule_sets + tiers + add_on_rules. Avoids Supabase client blocking. */
+export async function loadRuleSetDirect(
+  gameCode: string,
+  jurisdictionCode: string,
+  drawDate: string
+): Promise<{ ruleSet: Record<string, unknown>; tiers: Record<string, unknown>[]; addOns: Record<string, unknown>[] } | null> {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return null;
+  const headers = { apikey: key, Accept: 'application/json' };
+  const fetchTable = async (table: string, params: string) => {
+    const restUrl = `${url}/rest/v1/${table}?${params}`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const res = await _nativeFetch(restUrl, { method: 'GET', headers, signal: ctrl.signal }).finally(() => clearTimeout(t));
+    if (!res.ok) return [];
+    return (await res.json()) as Record<string, unknown>[];
+  };
+  const setsParams = `game_code=eq.${encodeURIComponent(gameCode)}&jurisdiction_code=eq.${encodeURIComponent(jurisdictionCode)}&is_active=eq.true&effective_from=lte.${encodeURIComponent(drawDate)}&or=(effective_to.is.null,effective_to.gte.${encodeURIComponent(drawDate)})&order=effective_from.desc&limit=1&select=*`;
+  const sets = await fetchTable('prize_rule_sets', setsParams);
+  if (!sets?.length) return null;
+  const ruleSet = sets[0];
+  const ruleSetId = String(ruleSet.id ?? '');
+  const [tiers, addOns] = await Promise.all([
+    fetchTable('prize_tiers', `rule_set_id=eq.${ruleSetId}&order=sort_order.asc&select=*`),
+    fetchTable('add_on_rules', `rule_set_id=eq.${ruleSetId}&select=*`),
+  ]);
+  return { ruleSet, tiers: tiers || [], addOns: addOns || [] };
+}
+
+/** Direct REST: fetch entitlements (avoids Supabase client blocking). Requires session from storage. */
+async function fetchEntitlementsDirect(uid: string, accessToken: string): Promise<{
+  compass_unlock: boolean;
+  pro_unlock: boolean;
+  pro_trial_ends: string | null;
+  had_astronaut_subscription: boolean;
+} | null> {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return null;
+  const restUrl = `${url}/rest/v1/entitlements?user_id=eq.${encodeURIComponent(uid)}&select=compass_unlock,pro_unlock,pro_trial_ends,had_astronaut_subscription&limit=1`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15000);
   try {
-    return await doFetch(supabase);
-  } catch (e) {
-    if (isAuthError(e)) {
-      await resetSupabaseAndClearStorage();
-      supabase = getSupabase();
-    }
-    if (!supabase) throw e;
-    return doFetch(supabase);
+    const res = await _nativeFetch(restUrl, {
+      method: 'GET',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (!res.ok) return null;
+    const rows = (await res.json()) as Record<string, unknown>[];
+    const data = rows?.[0];
+    if (!data) return null;
+    return {
+      compass_unlock: Boolean(data.compass_unlock),
+      pro_unlock: Boolean(data.pro_unlock),
+      pro_trial_ends: (data.pro_trial_ends as string) ?? null,
+      had_astronaut_subscription: Boolean(data.had_astronaut_subscription),
+    };
+  } catch {
+    return null;
   }
 }
 
-/** Server-side entitlements: fetch for current user. Returns null if not signed in or error. */
+/** Server-side entitlements: fetch for current user. Uses storage + direct REST first (no client blocking). */
 export async function fetchEntitlementsFromSupabase(): Promise<{
   compass_unlock: boolean;
   pro_unlock: boolean;
   pro_trial_ends: string | null;
   had_astronaut_subscription: boolean;
 } | null> {
+  const session = getSessionFromStorage();
+  if (session?.userId && session?.accessToken) {
+    const direct = await fetchEntitlementsDirect(session.userId, session.accessToken);
+    if (direct) return direct;
+  }
   const supabase = getSupabase();
   if (!supabase) return null;
   const uid = await getCurrentUserId();
   if (!uid) return null;
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Entitlements timeout')), 15000)
+  );
   try {
-    const { data, error } = await supabase
+    const fetchPromise = supabase
       .from('entitlements')
       .select('compass_unlock, pro_unlock, pro_trial_ends, had_astronaut_subscription')
       .eq('user_id', uid)
       .maybeSingle();
+    const { data, error } = await Promise.race([fetchPromise, timeout]);
     if (error) return null;
     if (!data) return null;
     return {
@@ -675,13 +875,55 @@ export async function fetchEntitlementsFromSupabase(): Promise<{
   }
 }
 
-/** Server-side entitlements: upsert for current user. No-op if not signed in. */
+/** Direct REST: upsert entitlements (avoids Supabase client blocking). */
+async function upsertEntitlementsDirect(
+  uid: string,
+  accessToken: string,
+  payload: { compass_unlock: boolean; pro_unlock: boolean; pro_trial_ends: string | null; had_astronaut_subscription?: boolean }
+): Promise<void> {
+  const { url, key } = getSupabaseConfig();
+  if (!url || !key) return;
+  const row: Record<string, unknown> = {
+    user_id: uid,
+    compass_unlock: payload.compass_unlock,
+    pro_unlock: payload.pro_unlock,
+    pro_trial_ends: payload.pro_trial_ends,
+    updated_at: new Date().toISOString(),
+  };
+  if (payload.had_astronaut_subscription === true) row.had_astronaut_subscription = true;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await _nativeFetch(`${url}/rest/v1/entitlements`, {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Prefer: 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify(row),
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(t));
+    if (!res.ok) return;
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Server-side entitlements: upsert for current user. Uses storage + direct REST first (no client blocking). */
 export async function upsertEntitlementsToSupabase(payload: {
   compass_unlock: boolean;
   pro_unlock: boolean;
   pro_trial_ends: string | null;
   had_astronaut_subscription?: boolean;
 }): Promise<void> {
+  const session = getSessionFromStorage();
+  if (session?.userId && session?.accessToken) {
+    await upsertEntitlementsDirect(session.userId, session.accessToken, payload);
+    return;
+  }
   const supabase = getSupabase();
   if (!supabase) return;
   const uid = await getCurrentUserId();
@@ -694,9 +936,7 @@ export async function upsertEntitlementsToSupabase(payload: {
       pro_trial_ends: payload.pro_trial_ends,
       updated_at: new Date().toISOString(),
     };
-    if (payload.had_astronaut_subscription === true) {
-      row.had_astronaut_subscription = true;
-    }
+    if (payload.had_astronaut_subscription === true) row.had_astronaut_subscription = true;
     await supabase.from('entitlements').upsert(row, { onConflict: 'user_id' });
   } catch {
     /* ignore - network or RLS */

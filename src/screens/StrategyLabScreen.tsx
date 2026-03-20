@@ -20,14 +20,15 @@ import {
   Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import { getRecords } from '../db/sqlite';
 import { fetchDraws, getCurrentUserEmail, onAuthStateChange } from '../services/supabase';
 import { getStrategyLabTotalCount, incrementStrategyLabTotalUsage, addToPickBook, getPickBookRecords, type PickBookRecord } from '../db/sqlite';
-import { getEntitlements, setProUnlocked, type UserPlan } from '../services/entitlements';
-import { isIAPAvailable, purchaseAstronaut, onPurchaseSuccess, getIAPProducts, formatAstronautPrice } from '../services/iap';
+import { getEntitlements, setProUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, type UserPlan } from '../services/entitlements';
+import { notifyAuthStateChange } from '../services/supabase';
+import { isIAPAvailable, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatAstronautPrice } from '../services/iap';
 import {
   getStrategySets,
   getActiveStrategySet,
@@ -187,9 +188,22 @@ export default function StrategyLabScreen() {
   }, [loadInBookDateKeys]);
 
   useEffect(() => {
-    getCurrentUserEmail().then((email) => setIsSignedIn(email !== null));
-    return onAuthStateChange((email) => setIsSignedIn(email !== null));
-  }, []);
+    const check = (email: string | null) => {
+      setIsSignedIn(email !== null);
+      loadState();
+    };
+    getCurrentUserEmail().then((email) => check(email));
+    return onAuthStateChange(check);
+  }, [loadState]);
+
+  useFocusEffect(
+    useCallback(() => {
+      getCurrentUserEmail().then((email) => {
+        setIsSignedIn(email !== null);
+        loadState();
+      });
+    }, [loadState])
+  );
 
   const userPicksSpecialCount = ['lotto_max', 'lotto_649'].includes(selectedLottery) ? 0 : (LOTTERY_DEFS[selectedLottery]?.special_count ?? 1);
 
@@ -566,9 +580,22 @@ export default function StrategyLabScreen() {
       }
       // Web / dev fallback: unlock locally
       await setProUnlocked(true);
-      setProUnlockedState(true);
+      await setHadAstronautEntitlement();
+      loadState();
     } catch (e) {
-      showAlert('Purchase failed', e instanceof Error ? e.message : 'Could not complete purchase.');
+      const msg = e instanceof Error ? e.message : String(e);
+      const isAlreadySubscribed = /already subscribed|already own|already owned|E_ALREADY_OWNED|ITEM_ALREADY_OWNED|ITEM_OWNED|active subscription/i.test(msg);
+      if (isAlreadySubscribed) {
+        let ok = await restoreIAPPurchases();
+        if (!ok) {
+          await setProUnlocked(true);
+          await setHadAstronautEntitlement();
+        }
+        loadState();
+        notifyAuthStateChange();
+        return;
+      }
+      showAlert('Purchase failed', msg || 'Could not complete purchase.');
     }
   };
 
@@ -911,14 +938,29 @@ export default function StrategyLabScreen() {
           Enter winning numbers and your picks. AI suggests small weight adjustments (±5% max). Does not predict outcomes.
         </Text>
         <TouchableOpacity
-          style={[styles.refineBtn, !proUnlocked && !devUnlockRefine && styles.refineBtnDisabled]}
-          onPress={() => setShowRefineModal(true)}
-          disabled={!proUnlocked && !devUnlockRefine}
+          style={[styles.refineBtn, isSignedIn !== false && !proUnlocked && !devUnlockRefine && styles.refineBtnDisabled]}
+          onPress={() => {
+            if (isSignedIn === false) {
+              (navigation as { navigate: (s: string) => void }).navigate('Login');
+              return;
+            }
+            setShowRefineModal(true);
+          }}
+          disabled={isSignedIn !== false && !proUnlocked && !devUnlockRefine}
         >
-          <Ionicons name="construct" size={20} color={COLORS.text} style={styles.btnIcon} />
-          <Text style={styles.refineBtnText}>Refine Strategy</Text>
+          {isSignedIn === false ? (
+            <>
+              <Ionicons name="log-in-outline" size={20} color={COLORS.text} style={styles.btnIcon} />
+              <Text style={styles.refineBtnText}>Sign in to use Refine Strategy</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="construct" size={20} color={COLORS.text} style={styles.btnIcon} />
+              <Text style={styles.refineBtnText}>Refine Strategy</Text>
+            </>
+          )}
         </TouchableOpacity>
-        {!proUnlocked && !devUnlockRefine && (
+        {isSignedIn !== false && !proUnlocked && !devUnlockRefine && (
           <Text style={styles.upgradeHint}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan for AI refinement.' : 'Start 1-month free trial to use AI-assisted refinement.'}</Text>
         )}
         {devUnlockRefine && (

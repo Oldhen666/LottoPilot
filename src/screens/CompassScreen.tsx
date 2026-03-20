@@ -89,6 +89,12 @@ export default function CompassScreen() {
     return onAuthStateChange((email) => setIsSignedIn(email !== null));
   }, []);
 
+  useFocusEffect(
+    useCallback(() => {
+      getCurrentUserEmail().then((email) => setIsSignedIn(email !== null));
+    }, [])
+  );
+
   useEffect(() => {
     if (isIAPAvailable()) {
       getIAPProducts().then(({ pirate }) => setPiratePrice(formatPiratePrice(pirate)));

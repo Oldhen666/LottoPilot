@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS, SPACING } from '../constants/theme';
-import { getCurrentUserEmail, isSupabaseConfigured, onAuthStateChange, signOut, testSupabaseConnection } from '../services/supabase';
+import { getCurrentUserEmail, notifyAuthStateChange, onAuthStateChange, signOut } from '../services/supabase';
 import { getEntitlements, setProUnlocked, setProTrialOneMonth, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, claimAdminIfEligible, syncLocalEntitlementsToServer, ADMIN_EMAILS, PLAN_LABELS, type UserPlan } from '../services/entitlements';
 import { isIAPAvailable, purchasePirate, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatPiratePrice, formatAstronautPrice, openSubscriptionManagement } from '../services/iap';
 import {
@@ -37,8 +37,6 @@ export default function SettingsScreen() {
   const [cancelSubModalVisible, setCancelSubModalVisible] = useState(false);
   const [cancelSubReason, setCancelSubReason] = useState<string | null>(null);
   const [syncingToServer, setSyncingToServer] = useState(false);
-  const [connectionTestResult, setConnectionTestResult] = useState<string | null>(null);
-  const [connectionTestLoading, setConnectionTestLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -77,9 +75,12 @@ export default function SettingsScreen() {
   }, []);
 
   useEffect(() => {
-    const check = (email: string | null) => {
+    const check = async (email: string | null) => {
       setCurrentUserEmail(email);
       setIsDeveloperEmail(email !== null && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(email));
+      const e = await getEntitlements();
+      setPlan(e.plan);
+      setHadAstronautSubscription(e.hadAstronautSubscription);
     };
     getCurrentUserEmail().then(check);
     return onAuthStateChange(check);
@@ -160,11 +161,10 @@ export default function SettingsScreen() {
             await setHadAstronautEntitlement();
             ok = true;
           }
-          if (ok) {
-            const ent = await getEntitlements();
-            setPlan(ent.plan);
-            setHadAstronautSubscription(ent.hadAstronautSubscription);
-          }
+          const ent = await getEntitlements();
+          setPlan(ent.plan);
+          setHadAstronautSubscription(ent.hadAstronautSubscription);
+          notifyAuthStateChange();
           if (Platform.OS === 'web') {
             showAlert('Restored', 'You already have Astronaut Plan. Restored successfully.');
           } else {
@@ -194,6 +194,8 @@ export default function SettingsScreen() {
       if (ok) {
         const ent = await getEntitlements();
         setPlan(ent.plan);
+        setHadAstronautSubscription(ent.hadAstronautSubscription);
+        notifyAuthStateChange();
         showAlert('Restored', 'Purchases restored successfully.');
       } else {
         showAlert('Restore', 'No purchases to restore.');
@@ -302,42 +304,6 @@ export default function SettingsScreen() {
               <Ionicons name="log-in-outline" size={20} color={COLORS.gold} style={styles.logOffIcon} />
               <Text style={styles.signInBtnText}>Sign in</Text>
             </TouchableOpacity>
-          </>
-        )}
-      </View>
-
-      {/* Supabase connection status - helps diagnose "Network request failed" */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Data connection</Text>
-        <Text style={styles.cardDesc}>
-          {isSupabaseConfigured()
-            ? 'Supabase: configured. If Latest Draw fails, tap Test below to see the actual error.'
-            : 'Supabase: not configured. Add URL and anon key to .env, then: eas update --channel production (no --environment)'}
-        </Text>
-        {isSupabaseConfigured() && (
-          <>
-            <TouchableOpacity
-              style={[styles.planUpgradeBtn, { marginTop: 8 }]}
-              onPress={async () => {
-                setConnectionTestLoading(true);
-                setConnectionTestResult(null);
-                const { ok, message } = await testSupabaseConnection();
-                setConnectionTestResult(ok ? `✓ ${message}` : `✗ ${message}`);
-                setConnectionTestLoading(false);
-              }}
-              disabled={connectionTestLoading}
-            >
-              {connectionTestLoading ? (
-                <ActivityIndicator size="small" color={COLORS.gold} />
-              ) : (
-                <Text style={styles.planUpgradeBtnText}>Test connection</Text>
-              )}
-            </TouchableOpacity>
-            {connectionTestResult && (
-              <Text style={[styles.cardDesc, { marginTop: 8, color: connectionTestResult.startsWith('✓') ? COLORS.success : COLORS.error }]}>
-                {connectionTestResult}
-              </Text>
-            )}
           </>
         )}
       </View>

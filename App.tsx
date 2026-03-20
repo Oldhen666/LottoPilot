@@ -16,7 +16,7 @@ import { syncLocalEntitlementsToServer } from './src/services/entitlements';
 import { runEarlyStorageVersionCheck } from './src/utils/storageVersionCheck';
 import { triggerAppActiveRefetch } from './src/utils/appActiveRefetch';
 import { invalidateDrawsCache } from './src/hooks/useDraws';
-import { getCurrentUserEmail, migrateAuthFromAsyncStorage, onAuthStateChange, preWarmSupabaseClient, resetSupabaseClient, tryRefreshSession, validateSessionOnStartup } from './src/services/supabase';
+import { getCurrentUserEmail, migrateAuthFromAsyncStorage, notifyAuthStateChange, onAuthStateChange, preWarmSupabaseClient, resetSupabaseClient, tryRefreshSession, validateSessionOnStartup } from './src/services/supabase';
 import { COLORS, SPACING } from './src/constants/theme';
 import { useJurisdiction } from './src/hooks/useJurisdiction';
 import HomeScreen from './src/screens/HomeScreen';
@@ -249,6 +249,7 @@ function AppContent() {
         await restoreIAPPurchases().catch(() => {});
       }
       await syncLocalEntitlementsToServer().catch(() => {});
+      notifyAuthStateChange();
     };
     getCurrentUserEmail().then(runRestoreAndSyncIfSignedIn);
     return onAuthStateChange(runRestoreAndSyncIfSignedIn);
