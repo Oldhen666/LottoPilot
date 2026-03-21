@@ -94,13 +94,20 @@ async function scrapeLottoMaxFromLottoResult(limit = 15): Promise<DrawData[]> {
       const year = m[3];
       const block = m[4];
       const winningSection = block.match(/Winning Numbers:[\s\S]*?<div class="col-lg-9"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? block;
-      const bonusMatch = block.match(/Bonus:[\s\S]*?<span class="number ballnumber"[^>]*>(\d+)<\/span>/i);
-      const mainNums: number[] = [];
+      const bonusMatch = block.match(/Bonus:[\s\S]*?<span class="number ballnumber"[^>]*>(\d+)<\/span>/i)
+        || block.match(/Bonus:[\s\n]*(\d+)/i);
+      let mainNums: number[] = [];
       let ballMatch: RegExpExecArray | null;
       ballRe.lastIndex = 0;
       while ((ballMatch = ballRe.exec(winningSection)) !== null && mainNums.length < 7) {
         const n = parseInt(ballMatch[1], 10);
         if (n >= 1 && n <= 50 && !mainNums.includes(n)) mainNums.push(n);
+      }
+      if (mainNums.length < 7) {
+        const concatMatch = winningSection.match(/Winning Numbers:[\s\S]*?(\d{10,20})/i);
+        if (concatMatch) {
+          mainNums = parseConcatenatedNumbers(concatMatch[1].replace(/\D/g, ''), 7);
+        }
       }
       const bonus = bonusMatch ? parseInt(bonusMatch[1], 10) : 0;
       if (mainNums.length === 7 && bonus >= 1 && bonus <= 50) {
@@ -170,13 +177,20 @@ async function scrapeLotto649FromLottoResult(limit = 15): Promise<DrawData[]> {
       const year = m[3];
       const block = m[4];
       const winningSection = block.match(/Winning Numbers:[\s\S]*?<div class="col-lg-9"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? block;
-      const bonusMatch = block.match(/Bonus:[\s\S]*?<span class="number ballnumber"[^>]*>(\d+)<\/span>/i);
-      const mainNums: number[] = [];
+      const bonusMatch = block.match(/Bonus:[\s\S]*?<span class="number ballnumber"[^>]*>(\d+)<\/span>/i)
+        || block.match(/Bonus:[\s\n]*(\d+)/i);
+      let mainNums: number[] = [];
       let ballMatch: RegExpExecArray | null;
       ballRe.lastIndex = 0;
       while ((ballMatch = ballRe.exec(winningSection)) !== null && mainNums.length < 6) {
         const n = parseInt(ballMatch[1], 10);
         if (n >= 1 && n <= 49 && !mainNums.includes(n)) mainNums.push(n);
+      }
+      if (mainNums.length < 6) {
+        const concatMatch = winningSection.match(/Winning Numbers:[\s\S]*?(\d{8,18})/i);
+        if (concatMatch) {
+          mainNums = parseConcatenatedNumbers(concatMatch[1].replace(/\D/g, ''), 6);
+        }
       }
       const bonus = bonusMatch ? parseInt(bonusMatch[1], 10) : 0;
       if (mainNums.length === 6 && bonus >= 1 && bonus <= 49) {
