@@ -76,14 +76,65 @@ function parseConcatenatedNumbers(digits: string, mainCount: number): number[] {
   return nums.length === mainCount ? nums.sort((a, b) => a - b) : [];
 }
 
+// Browser-like headers; rotate User-Agent on retry to improve CI stability
+const LOTTORESULT_USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+];
+
+const LOTTORESULT_BASE_HEADERS: Record<string, string> = {
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-CA,en;q=0.9',
+};
+
+const FETCH_TIMEOUT_MS = 30_000;
+const RETRY_DELAY_MS = 5000;
+const MAX_RETRIES = 3;
+
+/** Fetch with retry, timeout, and rotating User-Agent for CI stability */
+async function fetchLottoResult(
+  url: string,
+  attempt = 0
+): Promise<Response> {
+  const ua = LOTTORESULT_USER_AGENTS[attempt % LOTTORESULT_USER_AGENTS.length];
+  const headers = { ...LOTTORESULT_BASE_HEADERS, 'User-Agent': ua };
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      headers,
+      signal: controller.signal,
+    });
+    clearTimeout(to);
+    if (res.ok || attempt >= MAX_RETRIES - 1) return res;
+    if (res.status === 403 || res.status === 503) {
+      if (attempt < MAX_RETRIES - 1) {
+        if (USE_LOTTORESULT_FIRST) console.warn(`lottoresult.ca ${res.status}, retry ${attempt + 2}/${MAX_RETRIES}`);
+        await sleep(RETRY_DELAY_MS);
+        return fetchLottoResult(url, attempt + 1);
+      }
+    }
+    return res;
+  } catch (e) {
+    clearTimeout(to);
+    if (attempt < MAX_RETRIES - 1) {
+      if (USE_LOTTORESULT_FIRST) console.warn(`lottoresult.ca fetch error, retry ${attempt + 2}/${MAX_RETRIES}:`, (e as Error).message);
+      await sleep(RETRY_DELAY_MS);
+      return fetchLottoResult(url, attempt + 1);
+    }
+    throw e;
+  }
+}
+
 // Fallback: lottoresult.ca when WCLC fails (e.g. GitHub Actions IP blocked)
 // HTML: <h2>Lotto Max - Month Day, Year</h2> + Winning Numbers/Bonus in ballnumber spans
 async function scrapeLottoMaxFromLottoResult(limit = 15): Promise<DrawData[]> {
   const draws: DrawData[] = [];
   try {
-    const res = await fetch('https://www.lottoresult.ca/lotto-max-results', {
-      headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-    });
+    const res = await fetchLottoResult('https://www.lottoresult.ca/lotto-max-results');
     const html = await res.text();
     const blockRe = /<h2>Lotto Max - (January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})<\/h2>([\s\S]*?)(?=<h2>Lotto Max -|$)/gi;
     const ballRe = /<span class="number ballnumber"[^>]*>(\d+)<\/span>/g;
@@ -122,6 +173,64 @@ async function scrapeLottoMaxFromLottoResult(limit = 15): Promise<DrawData[]> {
   } catch (e) {
     console.error('Lotto Max (lottoresult.ca fallback) error:', e);
   }
+  // Debug: when CI and 0 draws, log response to diagnose GitHub Actions
+  if (USE_LOTTORESULT_FIRST && draws.length === 0) {
+    try {
+      const d = await fetchLottoResult('https://www.lottoresult.ca/lotto-max-results');
+      const h = await d.text();
+      const blockCount = (h.match(/<h2>Lotto Max -/gi) || []).length;
+      console.warn(
+        `[lotto_max lottoresult] status=${d.status} len=${h.length} blocks=${blockCount} snippet=${JSON.stringify(h.slice(0, 200))}`
+      );
+    } catch (_) {}
+  }
+  return draws;
+}
+
+// Tertiary fallback: lotterycanada.com - main page shows latest draw only (1 per game)
+async function scrapeLottoMaxFromLotteryCanada(): Promise<DrawData[]> {
+  const draws: DrawData[] = [];
+  try {
+    const res = await fetchLottoResult('https://www.lotterycanada.com/lotto-max');
+    const html = await res.text();
+    const dateMatch = html.match(/"datePublished"\s*:\s*"(\d{4})-(\d{2})-(\d{2})"/);
+    if (!dateMatch) return draws;
+    const draw_date = dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3];
+    const numCells = html.match(/>(\d{1,2})<\//g);
+    if (!numCells || numCells.length < 8) return draws;
+    const nums = numCells.slice(0, 8).map((s) => parseInt(s.replace(/\D/g, ''), 10));
+    const main = nums.slice(0, 7).filter((n) => n >= 1 && n <= 50);
+    const bonus = nums[7];
+    if (main.length === 7 && bonus >= 1 && bonus <= 50) {
+      main.sort((a, b) => a - b);
+      draws.push({ draw_date, main, special: [bonus] });
+    }
+  } catch (e) {
+    console.error('Lotto Max (lotterycanada.com fallback) error:', e);
+  }
+  return draws;
+}
+
+async function scrapeLotto649FromLotteryCanada(): Promise<DrawData[]> {
+  const draws: DrawData[] = [];
+  try {
+    const res = await fetchLottoResult('https://www.lotterycanada.com/lotto-649');
+    const html = await res.text();
+    const dateMatch = html.match(/"datePublished"\s*:\s*"(\d{4})-(\d{2})-(\d{2})"/);
+    if (!dateMatch) return draws;
+    const draw_date = dateMatch[1] + '-' + dateMatch[2] + '-' + dateMatch[3];
+    const numCells = html.match(/>(\d{1,2})<\//g);
+    if (!numCells || numCells.length < 7) return draws;
+    const nums = numCells.slice(0, 7).map((s) => parseInt(s.replace(/\D/g, ''), 10));
+    const main = nums.slice(0, 6).filter((n) => n >= 1 && n <= 49);
+    const bonus = nums[6];
+    if (main.length === 6 && bonus >= 1 && bonus <= 49) {
+      main.sort((a, b) => a - b);
+      draws.push({ draw_date, main, special: [bonus] });
+    }
+  } catch (e) {
+    console.error('Lotto 649 (lotterycanada.com fallback) error:', e);
+  }
   return draws;
 }
 
@@ -154,7 +263,13 @@ async function scrapeLottoMax(): Promise<DrawData[]> {
   }
   if (!USE_LOTTORESULT_FIRST) {
     console.log('Lotto Max: WCLC returned empty, trying lottoresult.ca fallback');
-    return scrapeLottoMaxFromLottoResult(15);
+    const lr = await scrapeLottoMaxFromLottoResult(15);
+    if (lr.length > 0) return lr;
+  }
+  const lc = await scrapeLottoMaxFromLotteryCanada();
+  if (lc.length > 0) {
+    console.log('Lotto Max: lotterycanada.com fallback 1 draw');
+    return lc;
   }
   return [];
 }
@@ -164,9 +279,7 @@ async function scrapeLottoMax(): Promise<DrawData[]> {
 async function scrapeLotto649FromLottoResult(limit = 15): Promise<DrawData[]> {
   const draws: DrawData[] = [];
   try {
-    const res = await fetch('https://www.lottoresult.ca/lotto-649-results', {
-      headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-    });
+    const res = await fetchLottoResult('https://www.lottoresult.ca/lotto-649-results');
     const html = await res.text();
     const blockRe = /<h2>Lotto 649 - (January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})<\/h2>([\s\S]*?)(?=<h2>Lotto 649 -|$)/gi;
     const ballRe = /<span class="number ballnumber"[^>]*>(\d+)<\/span>/g;
@@ -205,6 +318,16 @@ async function scrapeLotto649FromLottoResult(limit = 15): Promise<DrawData[]> {
   } catch (e) {
     console.error('Lotto 6/49 (lottoresult.ca fallback) error:', e);
   }
+  if (USE_LOTTORESULT_FIRST && draws.length === 0) {
+    try {
+      const d = await fetchLottoResult('https://www.lottoresult.ca/lotto-649-results');
+      const h = await d.text();
+      const blockCount = (h.match(/<h2>Lotto 649 -/gi) || []).length;
+      console.warn(
+        `[lotto_649 lottoresult] status=${d.status} len=${h.length} blocks=${blockCount} snippet=${JSON.stringify(h.slice(0, 200))}`
+      );
+    } catch (_) {}
+  }
   return draws;
 }
 
@@ -237,7 +360,13 @@ async function scrapeLotto649(): Promise<DrawData[]> {
   }
   if (!USE_LOTTORESULT_FIRST) {
     console.log('Lotto 6/49: WCLC returned empty, trying lottoresult.ca fallback');
-    return scrapeLotto649FromLottoResult(15);
+    const lr = await scrapeLotto649FromLottoResult(15);
+    if (lr.length > 0) return lr;
+  }
+  const lc = await scrapeLotto649FromLotteryCanada();
+  if (lc.length > 0) {
+    console.log('Lotto 6/49: lotterycanada.com fallback 1 draw');
+    return lc;
   }
   return [];
 }
@@ -374,9 +503,7 @@ async function scrapeOlgEncoreFromLottoResult(
   const results: OlgEncoreItem[] = [];
   try {
     const listUrl = `https://www.lottoresult.ca/${game}-results`;
-    const listRes = await fetch(listUrl, {
-      headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-    });
+    const listRes = await fetchLottoResult(listUrl);
     const listHtml = await listRes.text();
     // Match links like lotto-max-results-dec-5-2025 or lotto-649-results-dec-6-2025
     const linkRe = new RegExp(
@@ -396,9 +523,7 @@ async function scrapeOlgEncoreFromLottoResult(
 
     for (const { month, day, year } of toFetch) {
       const detailUrl = `https://www.lottoresult.ca/${game}-results-${month}-${day}-${year}`;
-      const detailRes = await fetch(detailUrl, {
-        headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-      });
+      const detailRes = await fetchLottoResult(detailUrl);
       const detailHtml = await detailRes.text();
       const encoreMatch = detailHtml.match(/Ontario\s+Encore:\s*(\d{7})/i);
       if (encoreMatch) {
@@ -420,9 +545,7 @@ async function scrapeAlcTagFromLottoResult(limit = 5): Promise<AlcTagItem[]> {
   for (const game of ['lotto-max', 'lotto-649'] as const) {
     try {
       const listUrl = `https://www.lottoresult.ca/${game}-results`;
-      const listRes = await fetch(listUrl, {
-        headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-      });
+      const listRes = await fetchLottoResult(listUrl);
       const listHtml = await listRes.text();
       const linkRe = new RegExp(`/${game}-results-([a-z]{3})-([0-9]{1,2})-([0-9]{4})`, 'gi');
       const matches = [...listHtml.matchAll(linkRe)];
@@ -431,9 +554,7 @@ async function scrapeAlcTagFromLottoResult(limit = 5): Promise<AlcTagItem[]> {
         const draw_date = `${m[3]}-${String(MONTH_ABBR[m[1].toLowerCase()] ?? 0).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
         if (byDate.has(draw_date)) continue;
         const detailUrl = `https://www.lottoresult.ca/${game}-results-${m[1]}-${m[2]}-${m[3]}`;
-        const detailRes = await fetch(detailUrl, {
-          headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
-        });
+        const detailRes = await fetchLottoResult(detailUrl);
         const detailHtml = await detailRes.text();
         const tagMatch = detailHtml.match(/Atlantic\s+Tag:\s*(\d{6})/i);
         if (tagMatch) {

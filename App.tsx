@@ -9,7 +9,6 @@ import { Text, StatusBar, Platform } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
-import mobileAds from 'react-native-google-mobile-ads';
 import { initDb } from './src/db/sqlite';
 import { runPreload } from './src/utils/preload';
 import { initIAP, setupPurchaseListeners, endIAP, restoreIAPPurchases, isIAPAvailable } from './src/services/iap';
@@ -17,6 +16,7 @@ import { syncLocalEntitlementsToServer } from './src/services/entitlements';
 import { runEarlyStorageVersionCheck } from './src/utils/storageVersionCheck';
 import { triggerAppActiveRefetch } from './src/utils/appActiveRefetch';
 import { initCompassGenerateGate } from './src/services/compassGenerateGate';
+import { notifyEntitlementsChange } from './src/services/entitlements';
 import { invalidateDrawsCache } from './src/hooks/useDraws';
 import { getCurrentUserEmail, migrateAuthFromAsyncStorage, notifyAuthStateChange, onAuthStateChange, preWarmSupabaseClient, resetSupabaseClient, tryRefreshSession, validateSessionOnStartup } from './src/services/supabase';
 import { COLORS, SPACING } from './src/constants/theme';
@@ -198,13 +198,17 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (Platform.OS !== 'web') {
+    if (Platform.OS === 'web') return;
+    try {
+      const mobileAds = require('react-native-google-mobile-ads').default;
       mobileAds()
         .initialize()
         .then(() => {
           if (__DEV__) console.log('[Ad] AdMob SDK initialized');
         })
-        .catch((e) => console.warn('[Ad] AdMob init failed:', e));
+        .catch((e: Error) => console.warn('[Ad] AdMob init failed:', e));
+    } catch (e) {
+      console.warn('[Ad] AdMob load failed:', e);
     }
   }, []);
 
@@ -257,13 +261,21 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    let lastRunAt = 0;
+    const DEBOUNCE_MS = 3000;
     const runRestoreAndSyncIfSignedIn = async (email: string | null) => {
       if (!email) return;
-      if (isIAPAvailable()) {
-        await restoreIAPPurchases().catch(() => {});
+      const now = Date.now();
+      if (now - lastRunAt < DEBOUNCE_MS) return; // 防止 notify 触发级联重复执行
+      lastRunAt = now;
+      try {
+        if (isIAPAvailable()) {
+          await restoreIAPPurchases().catch(() => {});
+        }
+        await syncLocalEntitlementsToServer().catch(() => {});
+      } finally {
+        notifyEntitlementsChange(); // 只刷新 UI，不触发 restore 级联
       }
-      await syncLocalEntitlementsToServer().catch(() => {});
-      notifyAuthStateChange();
     };
     getCurrentUserEmail().then(runRestoreAndSyncIfSignedIn);
     return onAuthStateChange(runRestoreAndSyncIfSignedIn);

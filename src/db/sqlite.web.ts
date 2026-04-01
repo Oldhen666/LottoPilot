@@ -303,6 +303,8 @@ export interface PickBookRecord {
   lottery_id: string;
   picks: { main: number[]; special: number[]; explanation: string }[];
   created_at: string;
+  strategy_set_id?: string | null;
+  strategy_set_name?: string | null;
 }
 
 function getPickBookFromStorage(): PickBookRecord[] {
@@ -320,17 +322,21 @@ function savePickBookToStorage(records: PickBookRecord[]): void {
   }
 }
 
-export async function pickBookExists(lotteryId: string, drawDate: string): Promise<boolean> {
+export async function pickBookExists(lotteryId: string, drawDate: string, strategySetId: string): Promise<boolean> {
   const records = getPickBookFromStorage();
-  return records.some((r) => r.lottery_id === lotteryId && r.draw_date === drawDate);
+  return records.some(
+    (r) => r.lottery_id === lotteryId && r.draw_date === drawDate && (r.strategy_set_id ?? '') === strategySetId
+  );
 }
 
 export async function addToPickBook(
   lotteryId: string,
   drawDate: string,
-  picks: { main: number[]; special: number[]; explanation: string }[]
+  picks: { main: number[]; special: number[]; explanation: string }[],
+  strategySetId: string,
+  strategySetName: string
 ): Promise<string | null> {
-  const exists = await pickBookExists(lotteryId, drawDate);
+  const exists = await pickBookExists(lotteryId, drawDate, strategySetId);
   if (exists) return null;
   const id = `pb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const now = new Date().toISOString();
@@ -341,15 +347,36 @@ export async function addToPickBook(
     lottery_id: lotteryId,
     picks,
     created_at: now,
+    strategy_set_id: strategySetId,
+    strategy_set_name: strategySetName,
   });
   savePickBookToStorage(records);
   return id;
 }
 
-export async function getPickBookRecords(opts?: { dateFilter?: string; sortOrder?: 'asc' | 'desc' }): Promise<PickBookRecord[]> {
+export async function getPickBookRecords(opts?: {
+  dateFilter?: string;
+  sortOrder?: 'asc' | 'desc';
+  lotteryId?: string;
+  strategySetId?: string;
+  includeFromCheckLines?: boolean;
+}): Promise<PickBookRecord[]> {
   let records = getPickBookFromStorage();
   if (opts?.dateFilter && opts.dateFilter.trim()) {
     records = records.filter((r) => r.draw_date === opts.dateFilter!.trim());
+  }
+  if (opts?.lotteryId) {
+    records = records.filter((r) => r.lottery_id === opts.lotteryId);
+  }
+  if (opts?.strategySetId !== undefined) {
+    const sid = opts.strategySetId;
+    records = records.filter((r) => {
+      const rs = r.strategy_set_id ?? '';
+      if (opts.includeFromCheckLines) {
+        return rs === sid || rs.startsWith('from_check_');
+      }
+      return rs === sid;
+    });
   }
   const asc = opts?.sortOrder === 'asc';
   return records.sort((a, b) => {

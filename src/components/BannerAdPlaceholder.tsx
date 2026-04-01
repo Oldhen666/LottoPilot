@@ -1,12 +1,12 @@
 /**
  * Banner ad component - real AdMob on native, placeholder on web.
  * Uses BANNER_AD_UNIT_ID from adConfig.
- * Pirate plan users: no ads (returns null).
+ * Pirate / Astronaut plans: hidden via shouldShowBannerAds (pass userPlan).
  */
 import React, { useRef } from 'react';
-import { View, Text, StyleSheet, useWindowDimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, useWindowDimensions, Platform, type ViewStyle } from 'react-native';
 import { COLORS, SPACING } from '../constants/theme';
-import { isAdFree } from '../services/adManager';
+import { shouldShowBannerAds } from '../services/adManager';
 import { BANNER_AD_UNIT_ID } from '../config/adConfig';
 import type { UserPlan } from '../services/entitlements';
 
@@ -41,13 +41,17 @@ function getAdaptiveBannerHeight(width: number): number {
 interface Props {
   testId?: string;
   userPlan?: UserPlan;
+  /** When set, overrides adManager.shouldShowBannerAds(userPlan). */
+  shouldShowBanner?: boolean;
+  /** Merged onto outer ad container (e.g. marginVertical: 0 above tab bar) */
+  containerStyle?: ViewStyle;
 }
 
-function PlaceholderView({ testId }: { testId?: string }) {
+function PlaceholderView({ testId, containerStyle }: { testId?: string; containerStyle?: ViewStyle }) {
   const { width } = useWindowDimensions();
   const adHeight = getAdaptiveBannerHeight(width);
   return (
-    <View style={[styles.container, { height: adHeight }]}>
+    <View style={[styles.container, { height: adHeight }, containerStyle]}>
       <View style={styles.inner}>
         <Text style={styles.label}>{testId ? `Ad slot ${testId}` : 'Ad'}</Text>
         {__DEV__ && (
@@ -58,7 +62,7 @@ function PlaceholderView({ testId }: { testId?: string }) {
   );
 }
 
-function NativeBannerAd({ testId }: { testId?: string }) {
+function NativeBannerAd({ testId, containerStyle }: { testId?: string; containerStyle?: ViewStyle }) {
   const bannerRef = useRef<{ load?: () => void } | null>(null);
 
   useForeground(() => {
@@ -68,11 +72,11 @@ function NativeBannerAd({ testId }: { testId?: string }) {
   });
 
   if (!BannerAd || !BannerAdSize) {
-    return <PlaceholderView testId={testId} />;
+    return <PlaceholderView testId={testId} containerStyle={containerStyle} />;
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, containerStyle]}>
       <BannerAd
         ref={bannerRef as React.RefObject<{ load: () => void }>}
         unitId={BANNER_AD_UNIT_ID}
@@ -88,16 +92,18 @@ function NativeBannerAd({ testId }: { testId?: string }) {
   );
 }
 
-export function BannerAdPlaceholder({ testId, userPlan }: Props) {
-  if (userPlan !== undefined && isAdFree(userPlan)) {
+export function BannerAdPlaceholder({ testId, userPlan, shouldShowBanner, containerStyle }: Props) {
+  const visible =
+    shouldShowBanner !== undefined ? shouldShowBanner : userPlan === undefined || shouldShowBannerAds(userPlan);
+  if (!visible) {
     return null;
   }
 
   if (!isNative || !BannerAd) {
-    return <PlaceholderView testId={testId} />;
+    return <PlaceholderView testId={testId} containerStyle={containerStyle} />;
   }
 
-  return <NativeBannerAd testId={testId} />;
+  return <NativeBannerAd testId={testId} containerStyle={containerStyle} />;
 }
 
 const styles = StyleSheet.create({

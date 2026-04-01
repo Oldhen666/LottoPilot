@@ -1,11 +1,18 @@
-# Scrape Lottery Draws - runs daily and populates Supabase draws table
+# Scrape Lottery Draws - runs twice daily and populates Supabase draws table
 # Required: Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to repo Secrets
+# Runs at 03:00 and 15:00 UTC - if one fails (e.g. lottoresult.ca block), the other may succeed
 name: Scrape Lottery Draws
 
 on:
   schedule:
     - cron: '0 3 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch:
+
+# Prevent overlapping runs when both cron triggers fire close together
+concurrency:
+  group: scrape-draws
+  cancel-in-progress: false
 
 jobs:
   scrape:

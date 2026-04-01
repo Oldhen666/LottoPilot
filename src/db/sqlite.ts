@@ -11,7 +11,7 @@ async function getDb(): Promise<SQLiteDatabase> {
   return db;
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 export async function initDb(): Promise<void> {
   if (initPromise) return initPromise;
@@ -116,7 +116,20 @@ export async function initDb(): Promise<void> {
         /* column may already exist */
       }
       await database.runAsync('DELETE FROM draws_cache');
-      await database.runAsync('UPDATE schema_version SET version = ? WHERE id = 1', SCHEMA_VERSION);
+      await database.runAsync('UPDATE schema_version SET version = ? WHERE id = 1', 7);
+    }
+    if (version < 8) {
+      try {
+        await database.execAsync('ALTER TABLE pick_book ADD COLUMN strategy_set_id TEXT');
+      } catch {
+        /* column may already exist */
+      }
+      try {
+        await database.execAsync('ALTER TABLE pick_book ADD COLUMN strategy_set_name TEXT');
+      } catch {
+        /* column may already exist */
+      }
+      await database.runAsync('UPDATE schema_version SET version = ? WHERE id = 1', 8);
     }
 
     // Clear draws_cache and compass_cache when app/OTA update changed (fixes stale data issues)
@@ -475,15 +488,19 @@ export interface PickBookRecord {
   lottery_id: string;
   picks: { main: number[]; special: number[]; explanation: string }[];
   created_at: string;
+  /** Strategy Lab set; null for rows created before this column existed */
+  strategy_set_id?: string | null;
+  strategy_set_name?: string | null;
 }
 
-export async function pickBookExists(lotteryId: string, drawDate: string): Promise<boolean> {
+export async function pickBookExists(lotteryId: string, drawDate: string, strategySetId: string): Promise<boolean> {
   await ensureDbReady();
   const database = await getDb();
   const rows = await database.getAllAsync<{ c: number }>(
-    'SELECT 1 as c FROM pick_book WHERE lottery_id = ? AND draw_date = ? LIMIT 1',
+    'SELECT 1 as c FROM pick_book WHERE lottery_id = ? AND draw_date = ? AND IFNULL(strategy_set_id, "") = ? LIMIT 1',
     lotteryId,
-    drawDate
+    drawDate,
+    strategySetId
   );
   return (rows?.length ?? 0) > 0;
 }
@@ -491,33 +508,61 @@ export async function pickBookExists(lotteryId: string, drawDate: string): Promi
 export async function addToPickBook(
   lotteryId: string,
   drawDate: string,
-  picks: { main: number[]; special: number[]; explanation: string }[]
+  picks: { main: number[]; special: number[]; explanation: string }[],
+  strategySetId: string,
+  strategySetName: string
 ): Promise<string | null> {
   await ensureDbReady();
-  const exists = await pickBookExists(lotteryId, drawDate);
+  const exists = await pickBookExists(lotteryId, drawDate, strategySetId);
   if (exists) return null;
   const database = await getDb();
   const id = `pb_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const now = new Date().toISOString();
   await database.runAsync(
-    'INSERT INTO pick_book (id, draw_date, lottery_id, picks_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO pick_book (id, draw_date, lottery_id, picks_json, created_at, strategy_set_id, strategy_set_name) VALUES (?, ?, ?, ?, ?, ?, ?)',
     id,
     drawDate,
     lotteryId,
     JSON.stringify(picks),
-    now
+    now,
+    strategySetId,
+    strategySetName
   );
   return id;
 }
 
-export async function getPickBookRecords(opts?: { dateFilter?: string; sortOrder?: 'asc' | 'desc' }): Promise<PickBookRecord[]> {
+export async function getPickBookRecords(opts?: {
+  dateFilter?: string;
+  sortOrder?: 'asc' | 'desc';
+  lotteryId?: string;
+  strategySetId?: string;
+  /** When true with strategySetId, also include rows saved from Check Result (id prefix from_check_) */
+  includeFromCheckLines?: boolean;
+}): Promise<PickBookRecord[]> {
   await ensureDbReady();
   const database = await getDb();
-  let sql = 'SELECT * FROM pick_book';
+  const clauses: string[] = [];
   const params: string[] = [];
   if (opts?.dateFilter && opts.dateFilter.trim()) {
-    sql += ' WHERE draw_date = ?';
+    clauses.push('draw_date = ?');
     params.push(opts.dateFilter.trim());
+  }
+  if (opts?.lotteryId) {
+    clauses.push('lottery_id = ?');
+    params.push(opts.lotteryId);
+  }
+  if (opts?.strategySetId !== undefined) {
+    if (opts.includeFromCheckLines) {
+      clauses.push('(IFNULL(strategy_set_id, "") = ? OR strategy_set_id LIKE ?)');
+      params.push(opts.strategySetId, 'from_check_%');
+    } else {
+      clauses.push('IFNULL(strategy_set_id, "") = ?');
+      params.push(opts.strategySetId);
+    }
+  }
+  let sql = 'SELECT * FROM pick_book';
+  if (clauses.length) {
+    sql += ` WHERE ${clauses.join(' AND ')}`;
   }
   const order = opts?.sortOrder === 'asc' ? 'ASC' : 'DESC';
   sql += ` ORDER BY draw_date ${order}, created_at ${order}`;
@@ -528,6 +573,8 @@ export async function getPickBookRecords(opts?: { dateFilter?: string; sortOrder
     lottery_id: row.lottery_id,
     picks: JSON.parse(row.picks_json),
     created_at: row.created_at,
+    strategy_set_id: row.strategy_set_id ?? null,
+    strategy_set_name: row.strategy_set_name ?? null,
   }));
 }
 

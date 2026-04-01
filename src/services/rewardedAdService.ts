@@ -104,3 +104,8 @@ export async function showRewardedAdForGeneratePicks(): Promise<boolean> {
     rewarded.load();
   });
 }
+
+/** Same rewarded unit as Compass; used for Strategy Lab generate/refine gates. */
+export async function showRewardedAdForStrategyLab(): Promise<boolean> {
+  return showRewardedAdForGeneratePicks();
+}

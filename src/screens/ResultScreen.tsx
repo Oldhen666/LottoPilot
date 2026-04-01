@@ -1,5 +1,16 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, BackHandler, Platform, Linking } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  BackHandler,
+  Platform,
+  Linking,
+  Modal,
+  Alert,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LOTTERY_DEFS } from '../constants/lotteries';
@@ -8,6 +19,7 @@ import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
 import { useEntitlements } from '../hooks/useEntitlements';
 import { getPrizeTierIcon } from '../utils/prizeTierIcon';
 import type { CheckRecord } from '../db/sqlite';
+import { addToPickBook } from '../db/sqlite';
 
 interface Props {
   record: CheckRecord;
@@ -15,24 +27,81 @@ interface Props {
   onEditNumbers?: () => void;
 }
 
+/** Pick book row id prefix for lines saved from check result (Refine can list these with current Strategy Set). */
+export function pickBookStrategyIdFromCheck(recordId: string, lineIdx: number): string {
+  return `from_check_${recordId}_L${lineIdx}`;
+}
+
 export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
   const { plan } = useEntitlements();
   const def = LOTTERY_DEFS[record.lottery_id];
   const mainSet = new Set(record.winning_numbers);
-  const specialSet = record.winning_special?.length
-    ? new Set(record.winning_special)
-    : undefined;
+  const specialSet = record.winning_special?.length ? new Set(record.winning_special) : undefined;
 
   const insets = useSafeAreaInsets();
+  const [exitModalVisible, setExitModalVisible] = useState(false);
+  const [addedLineKeys, setAddedLineKeys] = useState<Set<string>>(new Set());
+
+  const lineRows = useMemo(
+    () =>
+      record.result_json?.lineResults && record.result_json.lineResults.length > 0
+        ? record.result_json.lineResults
+        : [
+            {
+              user_main: record.user_numbers,
+              user_special: record.user_special,
+              match_main: record.match_count_main,
+              match_special: record.match_count_special ?? 0,
+              result_bucket: record.result_bucket,
+            },
+          ],
+    [record]
+  );
+
+  const finishExit = useCallback(() => {
+    setExitModalVisible(false);
+    onDone();
+  }, [onDone]);
+
+  const openExitModal = useCallback(() => {
+    setExitModalVisible(true);
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      onDone();
+      openExitModal();
       return true;
     });
     return () => sub.remove();
-  }, [onDone]);
+  }, [openExitModal]);
+
+  const handleAddLineToPickBook = async (lineIdx: number) => {
+    const line = lineRows[lineIdx];
+    if (!line) return;
+    const key = `${record.id}_${lineIdx}`;
+    if (addedLineKeys.has(key)) {
+      Alert.alert('Pick Book', 'This line is already added.');
+      return;
+    }
+    const main = line.user_main ?? [];
+    const special = line.user_special ?? [];
+    const explanation = `Check result · Line ${lineIdx + 1} · ${def?.name ?? record.lottery_id}`;
+    const sid = pickBookStrategyIdFromCheck(record.id, lineIdx);
+    const id = await addToPickBook(
+      record.lottery_id,
+      record.draw_date,
+      [{ main, special, explanation }],
+      sid,
+      `Check line ${lineIdx + 1}`
+    );
+    if (id) {
+      setAddedLineKeys((prev) => new Set(prev).add(key));
+      Alert.alert('', 'Added into pick book');
+    } else {
+      Alert.alert('Pick Book', 'This line is already in Pick Book for this draw.');
+    }
+  };
 
   return (
     <ScrollView
@@ -40,7 +109,7 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
     >
       <View style={styles.headerRow}>
-        <TouchableOpacity onPress={onDone} style={styles.backBtn}>
+        <TouchableOpacity onPress={openExitModal} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
@@ -58,18 +127,13 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Your Numbers</Text>
-        {(record.result_json?.lineResults && record.result_json.lineResults.length > 0
-          ? record.result_json.lineResults
-          : [{ user_main: record.user_numbers, user_special: record.user_special, match_main: record.match_count_main, match_special: record.match_count_special ?? 0, result_bucket: record.result_bucket }]
-        ).map((line, lineIdx) => {
+        {lineRows.map((line, lineIdx) => {
           const matchMain = 'match_main' in line ? line.match_main : record.match_count_main;
           const matchSpecial = 'match_special' in line ? line.match_special : (record.match_count_special ?? 0);
           const bucket = 'result_bucket' in line ? line.result_bucket : record.result_bucket;
           return (
             <View key={lineIdx} style={styles.lineBlock}>
-              {(record.result_json?.lineResults?.length ?? 0) > 1 && (
-                <Text style={styles.lineLabel}>Line {lineIdx + 1}</Text>
-              )}
+              {(lineRows.length ?? 0) > 1 && <Text style={styles.lineLabel}>Line {lineIdx + 1}</Text>}
               <View style={styles.numberRow}>
                 {line.user_main.map((n, i) => {
                   const hit = mainSet.has(n);
@@ -81,7 +145,12 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
                 })}
                 {line.user_special?.map((n, i) => {
                   const hit = specialSet?.has(n);
-                  const ballStyle = record.lottery_id === 'powerball' ? styles.ballPowerball : record.lottery_id === 'mega_millions' ? styles.ballMegaBall : styles.ballSpecial;
+                  const ballStyle =
+                    record.lottery_id === 'powerball'
+                      ? styles.ballPowerball
+                      : record.lottery_id === 'mega_millions'
+                        ? styles.ballMegaBall
+                        : styles.ballSpecial;
                   return (
                     <View key={`s${i}`} style={[styles.ball, ballStyle, hit && styles.ballHit]}>
                       <Text style={styles.ballText}>{n}</Text>
@@ -108,21 +177,17 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
                     : ''}
                 </Text>
                 <Text style={styles.bucketText}>{bucket.replace('_', ' ')}</Text>
-                {('prizeText' in line && line.prizeText)
-                  ? (
-                    <>
-                      <Text style={styles.prizeLineText}>Prize: {line.prizeText}</Text>
-                      <Text style={styles.prizeDisclaimerLine}>Reference only. Verify with official source when claiming.</Text>
-                    </>
-                  )
-                  : record.result_json?.estimatedPrizeText && lineIdx === 0
-                    ? (
-                    <>
-                      <Text style={styles.prizeLineText}>Prize: {record.result_json.estimatedPrizeText}</Text>
-                      <Text style={styles.prizeDisclaimerLine}>Reference only. Verify with official source when claiming.</Text>
-                    </>
-                    )
-                    : null}
+                {'prizeText' in line && line.prizeText ? (
+                  <>
+                    <Text style={styles.prizeLineText}>Prize: {line.prizeText}</Text>
+                    <Text style={styles.prizeDisclaimerLine}>Reference only. Verify with official source when claiming.</Text>
+                  </>
+                ) : record.result_json?.estimatedPrizeText && lineIdx === 0 ? (
+                  <>
+                    <Text style={styles.prizeLineText}>Prize: {record.result_json.estimatedPrizeText}</Text>
+                    <Text style={styles.prizeDisclaimerLine}>Reference only. Verify with official source when claiming.</Text>
+                  </>
+                ) : null}
               </View>
             </View>
           );
@@ -138,7 +203,12 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
             </View>
           ))}
           {record.winning_special?.map((n, i) => {
-            const ballStyle = record.lottery_id === 'powerball' ? styles.ballPowerball : record.lottery_id === 'mega_millions' ? styles.ballMegaBall : styles.ballSpecial;
+            const ballStyle =
+              record.lottery_id === 'powerball'
+                ? styles.ballPowerball
+                : record.lottery_id === 'mega_millions'
+                  ? styles.ballMegaBall
+                  : styles.ballSpecial;
             return (
               <View key={`s${i}`} style={[styles.ball, ballStyle]}>
                 <Text style={styles.ballText}>{n}</Text>
@@ -171,22 +241,34 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
           {record.result_json.addOnResults.EXTRA && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>EXTRA</Text>
-              <Text style={styles.addOnText}>Your: {record.result_json.addOnResults.EXTRA.user} • Winning: {record.result_json.addOnResults.EXTRA.winning}</Text>
-              <Text style={styles.addOnText}>{record.result_json.addOnResults.EXTRA.matchedDigits} digits matched • {record.result_json.addOnResults.EXTRA.prizeText}</Text>
+              <Text style={styles.addOnText}>
+                Your: {record.result_json.addOnResults.EXTRA.user} • Winning: {record.result_json.addOnResults.EXTRA.winning}
+              </Text>
+              <Text style={styles.addOnText}>
+                {record.result_json.addOnResults.EXTRA.matchedDigits} digits matched • {record.result_json.addOnResults.EXTRA.prizeText}
+              </Text>
             </View>
           )}
           {record.result_json.addOnResults.ENCORE && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>ENCORE</Text>
-              <Text style={styles.addOnText}>Your: {record.result_json.addOnResults.ENCORE.user} • Winning: {record.result_json.addOnResults.ENCORE.winning}</Text>
-              <Text style={styles.addOnText}>{record.result_json.addOnResults.ENCORE.matchedDigits} digits matched • {record.result_json.addOnResults.ENCORE.prizeText}</Text>
+              <Text style={styles.addOnText}>
+                Your: {record.result_json.addOnResults.ENCORE.user} • Winning: {record.result_json.addOnResults.ENCORE.winning}
+              </Text>
+              <Text style={styles.addOnText}>
+                {record.result_json.addOnResults.ENCORE.matchedDigits} digits matched • {record.result_json.addOnResults.ENCORE.prizeText}
+              </Text>
             </View>
           )}
           {record.result_json.addOnResults.TAG && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>TAG</Text>
-              <Text style={styles.addOnText}>Your: {record.result_json.addOnResults.TAG.user} • Winning: {record.result_json.addOnResults.TAG.winning}</Text>
-              <Text style={styles.addOnText}>{record.result_json.addOnResults.TAG.matchedDigits} digits matched • {record.result_json.addOnResults.TAG.prizeText}</Text>
+              <Text style={styles.addOnText}>
+                Your: {record.result_json.addOnResults.TAG.user} • Winning: {record.result_json.addOnResults.TAG.winning}
+              </Text>
+              <Text style={styles.addOnText}>
+                {record.result_json.addOnResults.TAG.matchedDigits} digits matched • {record.result_json.addOnResults.TAG.prizeText}
+              </Text>
             </View>
           )}
           {record.result_json.addOnResults.POWER_PLAY && (
@@ -194,14 +276,19 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               <Text style={styles.addOnBlockTitle}>Power Play</Text>
               <Text style={styles.addOnText}>
                 Multiplier: ×{record.result_json.addOnResults.POWER_PLAY.multiplier}
-                {record.result_json.addOnResults.POWER_PLAY.applied ? ' • Applied' : ' • Not applied (you did not add Power Play)'}
+                {record.result_json.addOnResults.POWER_PLAY.applied
+                  ? ' • Applied'
+                  : ' • Not applied (you did not add Power Play)'}
               </Text>
             </View>
           )}
           {record.result_json.addOnResults.DOUBLE_PLAY && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>Double Play</Text>
-              <Text style={styles.addOnText}>{record.result_json.addOnResults.DOUBLE_PLAY.match_main} main + {record.result_json.addOnResults.DOUBLE_PLAY.match_special} PB • {record.result_json.addOnResults.DOUBLE_PLAY.prizeText}</Text>
+              <Text style={styles.addOnText}>
+                {record.result_json.addOnResults.DOUBLE_PLAY.match_main} main + {record.result_json.addOnResults.DOUBLE_PLAY.match_special} PB •{' '}
+                {record.result_json.addOnResults.DOUBLE_PLAY.prizeText}
+              </Text>
             </View>
           )}
           {record.result_json.addOnResults.MAXMILLIONS && record.result_json.addOnResults.MAXMILLIONS.hits.length > 0 && (
@@ -215,18 +302,51 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               <Text style={styles.addOnBlockTitle}>Megaplier</Text>
               <Text style={styles.addOnText}>
                 Multiplier: ×{record.result_json.addOnResults.MEGA_MULTIPLIER.multiplier}
-                {record.result_json.addOnResults.MEGA_MULTIPLIER.applied ? ' • Applied' : ' • Not applied (you did not add Megaplier)'}
+                {record.result_json.addOnResults.MEGA_MULTIPLIER.applied
+                  ? ' • Applied'
+                  : ' • Not applied (you did not add Megaplier)'}
               </Text>
             </View>
           )}
         </View>
       )}
 
-      <TouchableOpacity style={styles.doneBtn} onPress={onDone}>
+      <TouchableOpacity style={styles.doneBtn} onPress={openExitModal}>
         <Text style={styles.doneBtnText}>Done</Text>
       </TouchableOpacity>
 
       <BannerAdPlaceholder testId="result" userPlan={plan} />
+
+      <Modal visible={exitModalVisible} transparent animationType="fade" onRequestClose={() => setExitModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setExitModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.exitModalCard}>
+            <Text style={styles.exitModalTitle}>Add picks to your book for refining model?</Text>
+            <Text style={styles.exitModalHint}>Tap the book icon to save a line to Pick Book for Strategy Lab.</Text>
+            <ScrollView style={styles.exitModalScroll} keyboardShouldPersistTaps="handled">
+              {lineRows.map((line, lineIdx) => (
+                <View key={lineIdx} style={styles.exitLineRow}>
+                  <View style={styles.exitLineNums}>
+                    <Text style={styles.exitLineLabel}>{lineRows.length > 1 ? `Line ${lineIdx + 1}` : 'Your line'}</Text>
+                    <Text style={styles.exitLineText} numberOfLines={2}>
+                      {[...line.user_main, ...(line.user_special ?? [])].join(' ')}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.exitBookBtn}
+                    onPress={() => handleAddLineToPickBook(lineIdx)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="book-outline" size={22} color={COLORS.gold} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.exitModalDone} onPress={finishExit}>
+              <Text style={styles.exitModalDoneText}>Continue</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </ScrollView>
   );
 }
@@ -267,15 +387,6 @@ const styles = StyleSheet.create({
   ballMegaBall: { backgroundColor: '#d4af37', borderWidth: 2, borderColor: '#b8962e' },
   ballHit: { backgroundColor: COLORS.success },
   ballText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
-  resultBox: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 24,
-    alignItems: 'center',
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.gold,
-  },
   matchSummaryHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
   resultLabel: { color: COLORS.textSecondary, fontSize: 12 },
   tierIcon: { fontSize: 24 },
@@ -284,17 +395,6 @@ const styles = StyleSheet.create({
   prizeLineText: { color: COLORS.success, fontSize: 16, fontWeight: '600', marginTop: 8 },
   prizeDisclaimerLine: { color: COLORS.textMuted, fontSize: 12, marginTop: 4 },
   officialLinksRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 24 },
-  prizeBox: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 24,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.success,
-  },
-  prizeTier: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 4 },
-  prizeAmount: { color: COLORS.text, fontSize: 20, fontWeight: '700' },
-  prizeDisclaimer: { color: COLORS.textMuted, fontSize: 11, marginTop: 4 },
   claimLink: { flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 6 },
   claimLinkText: { color: COLORS.gold, fontSize: 14 },
   addOnSection: { marginBottom: 24 },
@@ -311,4 +411,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   doneBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
+  exitModalCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 16,
+    padding: 20,
+    maxHeight: '80%',
+    width: '100%',
+    maxWidth: 400,
+    alignSelf: 'center',
+  },
+  exitModalTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
+  exitModalHint: { color: COLORS.textSecondary, fontSize: 13, marginBottom: 12, lineHeight: 20 },
+  exitModalScroll: { maxHeight: 280, marginBottom: 12 },
+  exitLineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgElevated,
+    gap: 8,
+  },
+  exitLineNums: { flex: 1, minWidth: 0 },
+  exitLineLabel: { color: COLORS.textMuted, fontSize: 11, marginBottom: 4 },
+  exitLineText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
+  exitBookBtn: { padding: 8 },
+  exitModalDone: {
+    backgroundColor: COLORS.gold,
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  exitModalDoneText: { color: COLORS.bg, fontWeight: '700', fontSize: 16 },
 });

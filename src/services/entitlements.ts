@@ -258,7 +258,7 @@ export async function clearUserRevokedAstronautFlag(): Promise<void> {
   await setItem(USER_REVOKED_ASTRONAUT_KEY, 'false');
 }
 
-/** 登录后调用：合并服务端与本地权益后同步，避免用本地空状态覆盖服务端已有订阅 */
+/** 登录后调用：合并服务端与本地权益后同步。先 restoreIAPPurchases，再调用本函数。 */
 export async function syncLocalEntitlementsToServer(): Promise<void> {
   const [server, pro, trialEnds, compass, hadAstronaut, userRevoked] = await Promise.all([
     fetchEntitlementsFromSupabase(),
@@ -268,15 +268,19 @@ export async function syncLocalEntitlementsToServer(): Promise<void> {
     getItem(HAD_ASTRONAUT_KEY),
     getItem(USER_REVOKED_ASTRONAUT_KEY),
   ]);
-  // 用户应用内取消 Astronaut 时，不因 server 或 restore 的旧数据覆盖
   const forceProOff = userRevoked === 'true';
-  // 新用户（无 server 记录）一律从 Free 开始，不信任本地（避免 license tester 污染）
-  const isNewUser = server == null;
-  // 已有 server 记录时：以 server 为准，不合并本地（避免 restore/license tester 覆盖正确的 server 数据）
-  const proUnlock = forceProOff ? false : (isNewUser ? false : (server?.pro_unlock ?? false));
-  const compassUnlock = isNewUser ? false : (server?.compass_unlock ?? false);
-  const hadAstronautSub = isNewUser ? false : (server?.had_astronaut_subscription ?? false);
-  const proTrialEnds = forceProOff || isNewUser ? null : (server?.pro_trial_ends ?? trialEnds ?? null);
+  const localPro = pro === 'true';
+  const localTrialEnd = trialEnds ? new Date(trialEnds).getTime() : 0;
+  const localProTrialActive = localTrialEnd > Date.now();
+  const localCompass = compass === 'true';
+  const localHadAstronaut = hadAstronaut === 'true';
+  const serverProTrialEnd = server?.pro_trial_ends ? new Date(server.pro_trial_ends).getTime() : 0;
+  const serverProTrialActive = serverProTrialEnd > Date.now();
+  // 合并 server 与 restore 后的本地：取并集，避免 restore 结果被过期 server 覆盖（如 reload 后 server 未及时更新）
+  const proUnlock = forceProOff ? false : (server?.pro_unlock || serverProTrialActive || localPro || localProTrialActive);
+  const compassUnlock = (server?.compass_unlock ?? false) || localCompass;
+  const hadAstronautSub = (server?.had_astronaut_subscription ?? false) || localHadAstronaut;
+  const proTrialEnds = forceProOff ? null : (server?.pro_trial_ends ?? trialEnds ?? null);
   await Promise.all([
     setItem(PRO_UNLOCK_KEY, proUnlock ? 'true' : 'false'),
     setItem(COMPASS_UNLOCK_KEY, compassUnlock ? 'true' : 'false'),
@@ -288,6 +292,25 @@ export async function syncLocalEntitlementsToServer(): Promise<void> {
     pro_unlock: proUnlock,
     pro_trial_ends: proTrialEnds,
     had_astronaut_subscription: hadAstronautSub,
+  });
+}
+
+/** 权益变更时通知 UI 刷新（不触发 restore，避免级联） */
+const _entitlementsListeners: Array<() => void> = [];
+export function onEntitlementsChange(callback: () => void): () => void {
+  _entitlementsListeners.push(callback);
+  return () => {
+    const i = _entitlementsListeners.indexOf(callback);
+    if (i >= 0) _entitlementsListeners.splice(i, 1);
+  };
+}
+export function notifyEntitlementsChange(): void {
+  _entitlementsListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch {
+      /* ignore */
+    }
   });
 }
 

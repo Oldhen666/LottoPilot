@@ -40,6 +40,9 @@ import type { CurrentJurisdiction } from '../types/jurisdiction';
 import type { AddOnCatalogItem, AddOnsSelected, AddOnsInputs } from '../types/addOn';
 
 const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+
+/** Check UI: hide multipliers (prize-only); does not affect match logic */
+const HIDDEN_ADD_ON_CODES = new Set<string>(['POWER_PLAY', 'DOUBLE_PLAY', 'MEGA_MULTIPLIER']);
 interface Props {
   preselectedLottery?: LotteryId;
   jurisdiction?: CurrentJurisdiction | null;
@@ -77,6 +80,8 @@ export default function CheckTicketScreen({
   const [lotteryId, setLotteryId] = useState<LotteryId>(preselectedLottery);
   const [lotteryDropdownOpen, setLotteryDropdownOpen] = useState(false);
   const [specialInput, setSpecialInput] = useState('');
+  /** Powerball / Mega Millions: one Powerball or Mega Ball per play line (matches physical tickets). */
+  const [specialByLine, setSpecialByLine] = useState<string[]>([]);
   const [allSets, setAllSets] = useState<number[][]>([]);
   const [selectedDraw, setSelectedDraw] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] } | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -123,6 +128,11 @@ export default function CheckTicketScreen({
     const plays = def?.plays_per_ticket ?? 1;
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
+    if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+      setSpecialByLine(Array.from({ length: plays }, () => ''));
+    } else {
+      setSpecialByLine([]);
+    }
   }, [lotteryId, initialRecordId]);
 
   useEffect(() => {
@@ -149,7 +159,24 @@ export default function CheckTicketScreen({
         sets.push(Array(mainCount).fill(0));
       }
       setAllSets(sets.slice(0, plays));
-      setSpecialInput(record.user_special?.length ? record.user_special.join(' ') : '');
+      if (record.lottery_id === 'powerball' || record.lottery_id === 'mega_millions') {
+        const lr = record.result_json?.lineResults;
+        if (lr?.length) {
+          setSpecialByLine(
+            Array.from({ length: plays }, (_, i) => {
+              const sp = lr[i]?.user_special?.[0];
+              return sp != null && sp > 0 ? String(sp) : '';
+            })
+          );
+        } else {
+          const one = record.user_special?.[0];
+          setSpecialByLine(Array.from({ length: plays }, () => (one != null && one > 0 ? String(one) : '')));
+        }
+        setSpecialInput('');
+      } else {
+        setSpecialInput(record.user_special?.length ? record.user_special.join(' ') : '');
+        setSpecialByLine([]);
+      }
       const draw = {
         draw_date: record.draw_date,
         winning_numbers: record.winning_numbers,
@@ -220,13 +247,57 @@ export default function CheckTicketScreen({
       Alert.alert('Invalid draw date', 'Mega Millions only draws on Tuesday and Friday. Please select a valid draw date.');
       return;
     }
-    const validSets = allSets.filter((s) => s.filter((n) => n > 0).length >= def.main_count);
-    const mainPlaysForCheck = validSets.map((s) => s.filter((n) => n > 0).sort((a, b) => a - b));
+    const mainPlaysWithLineIdx: { lineIdx: number; play: number[] }[] = [];
+    allSets.forEach((s, lineIdx) => {
+      const filtered = s.filter((n) => n > 0).sort((a, b) => a - b);
+      if (filtered.length >= def.main_count) {
+        mainPlaysWithLineIdx.push({ lineIdx, play: filtered });
+      }
+    });
+    const mainPlaysForCheck = mainPlaysWithLineIdx.map((x) => x.play);
     const userMain = mainPlaysForCheck[0];
     const needsSpecialInput = def.special_count > 0 && !['lotto_max', 'lotto_649'].includes(lotteryId);
-    const userSpecial = needsSpecialInput
-      ? parseNumbers(specialInput, def.special_count, def.special_min ?? 1, def.special_max ?? 49)
-      : undefined;
+    const isPbMm = lotteryId === 'powerball' || lotteryId === 'mega_millions';
+
+    const userSpecialPerLine: (number[] | undefined)[] = [];
+    if (needsSpecialInput) {
+      if (isPbMm) {
+        for (let i = 0; i < mainPlaysWithLineIdx.length; i++) {
+          const uiLine = mainPlaysWithLineIdx[i].lineIdx + 1;
+          const sp = parseNumbers(
+            specialByLine[mainPlaysWithLineIdx[i].lineIdx] ?? '',
+            def.special_count,
+            def.special_min ?? 1,
+            def.special_max ?? 49
+          );
+          if (!sp || sp.length < def.special_count) {
+            const label = lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball';
+            Alert.alert(
+              'Invalid input',
+              `Enter ${def.special_count} ${label} for line ${uiLine} (${def.special_min}-${def.special_max})`
+            );
+            return;
+          }
+          userSpecialPerLine.push(sp);
+        }
+      } else {
+        const userSpecial = parseNumbers(specialInput, def.special_count, def.special_min ?? 1, def.special_max ?? 49);
+        if (!userSpecial || userSpecial.length < def.special_count) {
+          const label = 'special';
+          Alert.alert('Invalid input', `Please enter ${def.special_count} ${label} number${def.special_count > 1 ? 's' : ''}`);
+          return;
+        }
+        for (let i = 0; i < mainPlaysForCheck.length; i++) {
+          userSpecialPerLine.push(userSpecial);
+        }
+      }
+    } else {
+      for (let i = 0; i < mainPlaysForCheck.length; i++) {
+        userSpecialPerLine.push(undefined);
+      }
+    }
+
+    const userSpecialFirst = userSpecialPerLine[0];
 
     if (!userMain || userMain.length < def.main_count) {
       Alert.alert('Invalid input', `Please enter at least Line 1 with ${def.main_count} numbers (${def.main_min}-${def.main_max}, ascending, unique)`);
@@ -237,33 +308,29 @@ export default function CheckTicketScreen({
       Alert.alert('Duplicate numbers', 'Each line must have unique numbers. Please remove duplicates and try again.');
       return;
     }
-    if (needsSpecialInput && (!userSpecial || userSpecial.length < def.special_count)) {
-      const label = lotteryId === 'powerball' ? 'Powerball' : lotteryId === 'mega_millions' ? 'Mega Ball' : 'special';
-      Alert.alert('Invalid input', `Please enter ${def.special_count} ${label} number${def.special_count > 1 ? 's' : ''}`);
-      return;
-    }
 
     try {
       const mainPlays = mainPlaysForCheck.length > 0 ? mainPlaysForCheck : [userMain];
       const lineResults: Array<{ user_main: number[]; user_special?: number[]; match_main: number; match_special: number; result_bucket: string }> = [];
       let bestResult = checkTicket(
         mainPlays[0],
-        userSpecial?.length ? userSpecial : undefined,
+        userSpecialFirst?.length ? userSpecialFirst : undefined,
         selectedDraw.winning_numbers,
         selectedDraw.special_numbers,
         def
       );
       for (let i = 0; i < mainPlays.length; i++) {
+        const us = userSpecialPerLine[i];
         const r = checkTicket(
           mainPlays[i],
-          userSpecial?.length ? userSpecial : undefined,
+          us?.length ? us : undefined,
           selectedDraw.winning_numbers,
           selectedDraw.special_numbers,
           def
         );
         lineResults.push({
           user_main: mainPlays[i],
-          user_special: userSpecial?.length ? userSpecial : undefined,
+          user_special: us?.length ? us : undefined,
           match_main: r.match_count_main,
           match_special: r.match_count_special,
           result_bucket: r.result_bucket,
@@ -282,8 +349,15 @@ export default function CheckTicketScreen({
       };
       const jCode = jurisdictionCode ?? 'NATIONAL';
       const prizeResults = await Promise.all(
-        mainPlays.map((play) =>
-          computePrize(lotteryId, jCode, drawWithPrize, play, userSpecial?.length ? userSpecial : undefined, addOnsSelected)
+        mainPlays.map((play, i) =>
+          computePrize(
+            lotteryId,
+            jCode,
+            drawWithPrize,
+            play,
+            userSpecialPerLine[i]?.length ? userSpecialPerLine[i] : undefined,
+            addOnsSelected
+          )
         )
       );
       const bestIdx = mainPlays.length > 1
@@ -312,7 +386,15 @@ export default function CheckTicketScreen({
         const tagDraw = await fetchDrawByDate('alc_tag', tagDrawDate);
         tagNumber = (tagDraw as { tag_number?: string } | null)?.tag_number ?? tagNumber;
       }
-      const addOnResults = computeAddOnResults(addOnsSelected, addOnsInputs, drawForAddOns, userMain, userSpecial?.length ? userSpecial : undefined, tagNumber, mainPlays);
+      const addOnResults = computeAddOnResults(
+        addOnsSelected,
+        addOnsInputs,
+        drawForAddOns,
+        userMain,
+        userSpecialFirst?.length ? userSpecialFirst : undefined,
+        tagNumber,
+        mainPlays
+      );
 
       const hasAddOns = Object.keys(addOnsSelected).some((k) => addOnsSelected[k as keyof typeof addOnsSelected]);
       const addOnsToSave = hasAddOns && addOnsSelected?.TAG
@@ -326,7 +408,7 @@ export default function CheckTicketScreen({
         lottery_id: lotteryId,
         draw_date: selectedDraw.draw_date,
         user_numbers: userMain,
-        user_special: userSpecial?.length ? userSpecial : undefined,
+        user_special: userSpecialFirst?.length ? userSpecialFirst : undefined,
         winning_numbers: selectedDraw.winning_numbers,
         winning_special: selectedDraw.special_numbers,
         match_count_main: result.match_count_main,
@@ -384,9 +466,17 @@ export default function CheckTicketScreen({
         setAllSets([parsed!.mainNumbers]);
       }
       if (parsed.specialNumbers?.length) {
-        setSpecialInput(parsed.specialNumbers.join(' '));
+        const spJoined = parsed.specialNumbers.join(' ');
+        setSpecialInput(spJoined);
+        if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+          const plays = def?.plays_per_ticket ?? 1;
+          setSpecialByLine(Array.from({ length: plays }, () => spJoined));
+        }
       } else if (lotteryId === 'lotto_max' || lotteryId === 'lotto_649') {
         setSpecialInput('');
+      } else if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+        const plays = def?.plays_per_ticket ?? 1;
+        setSpecialByLine(Array.from({ length: plays }, () => ''));
       }
       if (parsed.addOnsDetected) {
         const catalog = addOnCatalog.length > 0 ? addOnCatalog : await fetchAddOnCatalog(lotteryId, jCode);
@@ -394,6 +484,7 @@ export default function CheckTicketScreen({
         const newSelected: AddOnsSelected = {};
         const newInputs: AddOnsInputs = {};
         for (const code of selectable) {
+          if (HIDDEN_ADD_ON_CODES.has(code)) continue;
           if (parsed.addOnsDetected!.selected[code]) {
             newSelected[code as keyof AddOnsSelected] = true;
             const val = parsed.addOnsDetected!.inputs[code];
@@ -718,97 +809,105 @@ export default function CheckTicketScreen({
       <Text style={styles.label}>
         {(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? 'White balls ' : ''}{def.main_count} numbers ({def.main_min}-{def.main_max}, ascending, unique)
         {(def?.plays_per_ticket ?? 1) > 1 ? ` · ${def?.plays_per_ticket ?? 1} lines` : ''}
+        {(lotteryId === 'powerball' || lotteryId === 'mega_millions') &&
+          ` · last box: ${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} (${def.special_min}–${def.special_max})`}
       </Text>
       {Array.from({ length: def?.plays_per_ticket ?? 1 }, (_, i) => i).map((lineIdx) => {
         const row = (allSets[lineIdx] ?? Array(def.main_count).fill(0)).slice(0, def.main_count);
         const values = row.map((n) => (n > 0 ? String(n) : ''));
         const paddedValues = values.length >= def.main_count ? values : [...values, ...Array(def.main_count - values.length).fill('')];
+        const isPbMm = lotteryId === 'powerball' || lotteryId === 'mega_millions';
+        const flexFillMainRow =
+          isPbMm || lotteryId === 'lotto_max' || lotteryId === 'lotto_649';
+
+        const mainBoxes = (
+          <MainNumbersBoxes
+            flexFill={flexFillMainRow}
+            count={def.main_count}
+            minVal={def.main_min}
+            maxVal={def.main_max}
+            values={paddedValues}
+            onChange={(v) => {
+              const padded = v.slice(0, def.main_count).map((s) => {
+                const digits = s.replace(/\D/g, '');
+                if (digits === '') return 0;
+                const n = parseInt(digits, 10);
+                return !isNaN(n) && n >= def.main_min && n <= def.main_max ? n : 0;
+              });
+              const result = [...padded, ...Array(Math.max(0, def.main_count - padded.length)).fill(0)].slice(0, def.main_count) as number[];
+              setAllSets((prev) => {
+                const plays = def?.plays_per_ticket ?? 1;
+                const next = prev.length >= plays ? [...prev] : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
+                const copy = next.map((s) => [...s]);
+                copy[lineIdx] = result;
+                return copy;
+              });
+            }}
+            placeholder=""
+          />
+        );
+
         return (
           <View key={lineIdx} style={styles.lineBlock}>
             {(def?.plays_per_ticket ?? 1) > 1 && (
               <Text style={styles.lineLabel}>Line {lineIdx + 1}</Text>
             )}
-            <MainNumbersBoxes
-              count={def.main_count}
-              minVal={def.main_min}
-              maxVal={def.main_max}
-              values={paddedValues}
-              onChange={(v) => {
-                const padded = v.slice(0, def.main_count).map((s) => {
-                  const digits = s.replace(/\D/g, '');
-                  if (digits === '') return 0;
-                  const n = parseInt(digits, 10);
-                  return !isNaN(n) && n >= def.main_min && n <= def.main_max ? n : 0;
-                });
-                const result = [...padded, ...Array(Math.max(0, def.main_count - padded.length)).fill(0)].slice(0, def.main_count) as number[];
-                setAllSets((prev) => {
-                  const plays = def?.plays_per_ticket ?? 1;
-                  const next = prev.length >= plays ? [...prev] : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
-                  const copy = next.map((s) => [...s]);
-                  copy[lineIdx] = result;
-                  return copy;
-                });
-              }}
-              placeholder=""
-            />
+            {isPbMm ? (
+              <View style={styles.pbMmMainSpecialRow}>
+                <View style={styles.pbMmMainFlex}>{mainBoxes}</View>
+                <View style={styles.pbMmSpecialFlex}>
+                  <TextInput
+                    style={[
+                      styles.specialBallBox,
+                      lotteryId === 'powerball' ? styles.specialBallPowerball : styles.specialBallMegaBall,
+                    ]}
+                    value={specialByLine[lineIdx] ?? ''}
+                    onChangeText={(t) => {
+                      const digits = t.replace(/\D/g, '').slice(0, String(def.special_max).length);
+                      setSpecialByLine((prev) => {
+                        const plays = def?.plays_per_ticket ?? 1;
+                        const next = [...prev];
+                        while (next.length < plays) next.push('');
+                        next[lineIdx] = digits;
+                        return next;
+                      });
+                    }}
+                    placeholder=""
+                    placeholderTextColor={COLORS.textSecondary}
+                    keyboardType="number-pad"
+                    maxLength={String(def.special_max).length}
+                  />
+                </View>
+              </View>
+            ) : (
+              mainBoxes
+            )}
           </View>
         );
       })}
 
       {def.special_count > 0 && !['lotto_max', 'lotto_649'].includes(lotteryId) && (
         <>
-          <Text style={styles.label}>
-            {lotteryId === 'powerball'
-              ? `Powerball (Red Ball) (1 number, ${def.special_min}–${def.special_max})`
-              : lotteryId === 'mega_millions'
-                ? `Mega Ball (Gold Ball) (1 number, ${def.special_min}–${def.special_max})`
-                : `Special number (1 number, ${def.special_min}-${def.special_max})`}
-          </Text>
-          <TextInput
-            style={[styles.input, (lotteryId === 'powerball' && styles.inputPowerball) || (lotteryId === 'mega_millions' && styles.inputMegaBall)]}
-            value={specialInput}
-            onChangeText={setSpecialInput}
-            placeholder={(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? '' : `1 number, ${def.special_min}-${def.special_max}`}
-            placeholderTextColor={COLORS.textSecondary}
-            keyboardType="number-pad"
-          />
-          {lotteryId === 'powerball' && (
-            <TouchableOpacity
-              style={[styles.powerPlayRow, addOnsSelected.POWER_PLAY && styles.powerPlayRowActive]}
-              onPress={() => setAddOnsSelected((s) => ({ ...s, POWER_PLAY: !s.POWER_PLAY }))}
-            >
-              <Ionicons name={addOnsSelected.POWER_PLAY ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
-              <Text style={styles.powerPlayLabel}>Power Play (+$1)</Text>
-            </TouchableOpacity>
-          )}
-          {lotteryId === 'mega_millions' && (
-            <TouchableOpacity
-              style={[styles.powerPlayRow, addOnsSelected.MEGA_MULTIPLIER && styles.powerPlayRowActive]}
-              onPress={() => setAddOnsSelected((s) => ({ ...s, MEGA_MULTIPLIER: !s.MEGA_MULTIPLIER }))}
-            >
-              <Ionicons name={addOnsSelected.MEGA_MULTIPLIER ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
-              <Text style={styles.powerPlayLabel}>Megaplier (+$1)</Text>
-            </TouchableOpacity>
-          )}
+          {lotteryId !== 'powerball' && lotteryId !== 'mega_millions' ? (
+            <>
+              <Text style={styles.label}>{`Special number (1 number, ${def.special_min}-${def.special_max})`}</Text>
+              <TextInput
+                style={styles.input}
+                value={specialInput}
+                onChangeText={setSpecialInput}
+                placeholder={`1 number, ${def.special_min}-${def.special_max}`}
+                placeholderTextColor={COLORS.textSecondary}
+                keyboardType="number-pad"
+              />
+            </>
+          ) : null}
         </>
       )}
 
-      {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && (lotteryId !== 'powerball' || i.add_on_code !== 'POWER_PLAY')).length > 0 && (
+      {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).length > 0 && (
         <View style={styles.addOnSection}>
           <Text style={styles.label}>Add-ons (optional)</Text>
-          {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && (lotteryId !== 'powerball' || i.add_on_code !== 'POWER_PLAY')).map((item) => {
-            if (item.add_on_code === 'POWER_PLAY' || item.add_on_code === 'DOUBLE_PLAY') {
-              return (
-                <TouchableOpacity
-                  key={item.add_on_code}
-                  style={[styles.addOnRow, addOnsSelected[item.add_on_code] && styles.addOnRowActive]}
-                  onPress={() => setAddOnsSelected((s) => ({ ...s, [item.add_on_code]: !s[item.add_on_code] }))}
-                >
-                  <Ionicons name={addOnsSelected[item.add_on_code] ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
-                  <Text style={styles.addOnLabel}>{item.add_on_code.replace('_', ' ')}</Text>
-                </TouchableOpacity>
-              );
-            }
+          {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).map((item) => {
             if (item.add_on_code === 'EXTRA' || item.add_on_code === 'ENCORE' || item.add_on_code === 'TAG') {
               const digits = item.input_schema_json?.digits ?? 7;
               return (
@@ -981,11 +1080,31 @@ const styles = StyleSheet.create({
   dropdownOptionLast: { borderBottomWidth: 0 },
   dropdownOptionText: { color: COLORS.text, fontSize: 16 },
   jurisdictionHint: { color: COLORS.textMuted, fontSize: 12, marginBottom: 12 },
-  inputPowerball: { borderColor: '#dc2626', borderWidth: 2, width: 44, height: 44, padding: 0, alignSelf: 'flex-start', marginBottom: 8, textAlign: 'center', fontSize: 16, fontWeight: '600' },
-  inputMegaBall: { borderColor: COLORS.gold, borderWidth: 2, width: 44, height: 44, padding: 0, alignSelf: 'flex-start', marginBottom: 8, textAlign: 'center', fontSize: 16, fontWeight: '600' },
-  powerPlayRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 10, marginTop: 8 },
-  powerPlayRowActive: {},
-  powerPlayLabel: { color: COLORS.text, fontSize: 15 },
+  pbMmMainSpecialRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    flexWrap: 'nowrap',
+    width: '100%',
+    gap: 4,
+  },
+  /** 5/6 width → five main cells each 1/6 of row (matches special cell) */
+  pbMmMainFlex: { flex: 5, minWidth: 0 },
+  pbMmSpecialFlex: { flex: 1, minWidth: 0, justifyContent: 'center' },
+  specialBallBox: {
+    width: '100%',
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#152238',
+    borderWidth: 1,
+    borderColor: '#1e3254',
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    padding: 0,
+  },
+  specialBallPowerball: { borderColor: '#dc2626' },
+  specialBallMegaBall: { borderColor: COLORS.gold },
   addOnSection: { marginBottom: 20 },
   addOnRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10 },
   addOnRowActive: {},

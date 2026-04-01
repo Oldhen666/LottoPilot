@@ -21,9 +21,11 @@ interface Props {
   onChange: (values: string[]) => void;
   placeholder?: string;
   style?: object;
+  /** Equal-width boxes in one row (no wrap); full width of parent (Lotto Max / PB+MM / etc.) */
+  flexFill?: boolean;
 }
 
-export function MainNumbersBoxes({ count, minVal, maxVal, values, onChange, placeholder, style }: Props) {
+export function MainNumbersBoxes({ count, minVal, maxVal, values, onChange, placeholder, style, flexFill }: Props) {
   const refs = useRef<(TextInput | null)[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxDigits = maxVal >= 10 ? 2 : 1;
@@ -67,12 +69,12 @@ export function MainNumbersBoxes({ count, minVal, maxVal, values, onChange, plac
   };
 
   return (
-    <View style={[styles.row, style]}>
+    <View style={[styles.row, flexFill && styles.rowFlexFill, style]}>
       {Array.from({ length: count }).map((_, i) => (
         <TextInput
           key={i}
           ref={(r) => { refs.current[i] = r; }}
-          style={[styles.box, values[i] ? styles.boxFilled : null]}
+          style={[styles.box, flexFill && styles.boxFlexFill, values[i] ? styles.boxFilled : null]}
           value={values[i]}
           onChangeText={(t) => handleChange(i, t)}
           onKeyPress={(e) => handleKeyPress(i, e)}
@@ -89,6 +91,7 @@ export function MainNumbersBoxes({ count, minVal, maxVal, values, onChange, plac
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  rowFlexFill: { flexWrap: 'nowrap', gap: 4, width: '100%', alignSelf: 'stretch', minWidth: 0 },
   box: {
     width: BOX_SIZE,
     height: BOX_SIZE,
@@ -102,4 +105,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   boxFilled: { borderColor: '#4f46e5' },
+  /** Equal share of row width (e.g. PB/MM line: 5 mains + special = same cell width) */
+  boxFlexFill: { flex: 1, width: undefined, minWidth: 0 },
 });

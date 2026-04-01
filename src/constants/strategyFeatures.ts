@@ -44,6 +44,25 @@ export const STRATEGY_FEATURES: FeatureDef[] = [
 
 export type FeatureId = typeof STRATEGY_FEATURES[number]['id'];
 
+/**
+ * Astronaut-only: adjustable in Strategy Lab + eligible for AI Refine.
+ * Free/Pirate: locked UI (lock icon, gray tube); Refine does not tune these.
+ */
+export const ASTRONAUT_ONLY_FEATURE_IDS = new Set<FeatureId>([
+  'sum_deviation',
+  'max_gap',
+  'avg_gap',
+  'edge_bias',
+  'mid_density',
+  'common_pattern_penalty',
+  'birthday_penalty',
+  'symmetry_penalty',
+]);
+
+export function isAstronautOnlyFeature(id: FeatureId): boolean {
+  return ASTRONAUT_ONLY_FEATURE_IDS.has(id);
+}
+
 export function getDefaultFeatureWeights(): Record<FeatureId, number> {
   const out: Record<string, number> = {};
   for (const f of STRATEGY_FEATURES) {

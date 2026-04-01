@@ -12,7 +12,7 @@ import type {
   DeltaSummary,
 } from '../types/strategy';
 import type { FeatureId } from '../constants/strategyFeatures';
-import { STRATEGY_FEATURES } from '../constants/strategyFeatures';
+import { isAstronautOnlyFeature } from '../constants/strategyFeatures';
 
 const MAX_DELTA = 0.05;
 
@@ -114,6 +114,19 @@ export function computeRefineProposal(input: RefineInput): RefineProposal {
   const reasoning = buildReasoning(input, unique);
 
   return { deltas: unique, reasoning };
+}
+
+/**
+ * Non-Astronaut: drop refine deltas that target Astronaut-only weights.
+ * If nothing remains, use a safe fallback on an unlocked feature (recency_bias).
+ */
+export function filterRefineDeltasForPlan(deltas: FeatureDelta[], proUnlocked: boolean): FeatureDelta[] {
+  if (proUnlocked) return deltas;
+  const filtered = deltas.filter((d) => !isAstronautOnlyFeature(d.featureId as FeatureId));
+  if (filtered.length > 0) return dedupeDeltas(filtered);
+  return dedupeDeltas([
+    { featureId: 'recency_bias', direction: 'decrease', magnitude: clampDelta(0.02) },
+  ]);
 }
 
 function dedupeDeltas(deltas: FeatureDelta[]): FeatureDelta[] {

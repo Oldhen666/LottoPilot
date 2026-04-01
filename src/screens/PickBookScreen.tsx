@@ -182,6 +182,9 @@ export default function PickBookScreen({ onBack }: Props) {
                 <View style={styles.cardHeaderLeft}>
                   <Text style={styles.drawDate}>{item.draw_date}</Text>
                   <Text style={styles.lotteryName}>{LOTTERY_DEFS[item.lottery_id as LotteryId]?.name ?? item.lottery_id}</Text>
+                  {item.strategy_set_name ? (
+                    <Text style={styles.strategySetTag}>{item.strategy_set_name}</Text>
+                  ) : null}
                 </View>
                 <TouchableOpacity
                   onPress={() => onDeleteRecord(item)}
@@ -292,6 +295,7 @@ const styles = StyleSheet.create({
   cardHeaderLeft: { flex: 1 },
   drawDate: { color: COLORS.gold, fontSize: 16, fontWeight: '700' },
   lotteryName: { color: COLORS.textSecondary, fontSize: 14 },
+  strategySetTag: { color: COLORS.gold, fontSize: 13, fontWeight: '600', marginTop: 4 },
   deleteBtn: { padding: 4 },
   pickRow: { marginBottom: 12 },
   ballRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },

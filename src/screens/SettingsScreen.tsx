@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Linking, TouchableOpacity, Switch, Modal, ActivityIndicator, TextInput, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Linking, TouchableOpacity, Switch, Modal, ActivityIndicator, Alert, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { COLORS, SPACING } from '../constants/theme';
-import { getCurrentUserEmail, notifyAuthStateChange, onAuthStateChange, signOut } from '../services/supabase';
-import { getEntitlements, setProUnlocked, setProTrialOneMonth, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, claimAdminIfEligible, syncLocalEntitlementsToServer, clearUserRevokedAstronautFlag, ADMIN_EMAILS, PLAN_LABELS, type UserPlan } from '../services/entitlements';
+import { getCurrentUserEmail, onAuthStateChange, signOut } from '../services/supabase';
+import { getEntitlements, setProUnlocked, setProTrialOneMonth, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, syncLocalEntitlementsToServer, clearUserRevokedAstronautFlag, onEntitlementsChange, notifyEntitlementsChange, PLAN_LABELS, type UserPlan } from '../services/entitlements';
 import { isIAPAvailable, purchasePirate, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatPiratePrice, formatAstronautPrice, openSubscriptionManagement } from '../services/iap';
 import {
   DISCLAIMER_SHORT,
@@ -16,28 +16,25 @@ import {
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import { useJurisdiction } from '../hooks/useJurisdiction';
 import { CA_PROVINCES, US_STATES } from '../constants/jurisdictions';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { shouldShowSettingsBannerAds } from '../services/adManager';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const [plan, setPlan] = useState<UserPlan>('free');
   const [hadAstronautSubscription, setHadAstronautSubscription] = useState(false);
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminClaiming, setAdminClaiming] = useState(false);
   const { jurisdiction, useLocation, loading, toggleUseLocation, setManual } = useJurisdiction();
   const [overrideModal, setOverrideModal] = useState(false);
   const [overrideCountry, setOverrideCountry] = useState<'CA' | 'US'>('CA');
   const [overrideRegion, setOverrideRegion] = useState('ON');
   const [disclaimerModalVisible, setDisclaimerModalVisible] = useState(false);
-  const [developerExpanded, setDeveloperExpanded] = useState(false);
-  const [isDeveloperEmail, setIsDeveloperEmail] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [findDifficultyModalVisible, setFindDifficultyModalVisible] = useState(false);
   const [piratePrice, setPiratePrice] = useState('$3.49');
   const [astronautPrice, setAstronautPrice] = useState('$0.99/mo');
   const [cancelSubModalVisible, setCancelSubModalVisible] = useState(false);
   const [cancelSubReason, setCancelSubReason] = useState<string | null>(null);
-  const [syncingToServer, setSyncingToServer] = useState(false);
-
   useEffect(() => {
     const load = async () => {
       const e = await getEntitlements();
@@ -77,18 +74,28 @@ export default function SettingsScreen() {
   useEffect(() => {
     const check = async (email: string | null) => {
       setCurrentUserEmail(email);
-      setIsDeveloperEmail(email !== null && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(email));
-      const e = await getEntitlements();
-      setPlan(e.plan);
-      setHadAstronautSubscription(e.hadAstronautSubscription);
+      if (email) {
+        const e = await getEntitlements();
+        setPlan(e.plan);
+        setHadAstronautSubscription(e.hadAstronautSubscription);
+      }
     };
     getCurrentUserEmail().then(check);
-    return onAuthStateChange(check);
+    const unsubAuth = onAuthStateChange(check);
+    const unsubEnt = onEntitlementsChange(() => {
+      getEntitlements().then((e) => {
+        setPlan(e.plan);
+        setHadAstronautSubscription(e.hadAstronautSubscription);
+      });
+    });
+    return () => {
+      unsubAuth();
+      unsubEnt();
+    };
   }, []);
 
   const handleLogOff = async () => {
     setCurrentUserEmail(null);
-    setIsDeveloperEmail(false);
     try {
       await signOut();
       setPlan('free');
@@ -161,10 +168,11 @@ export default function SettingsScreen() {
             await setHadAstronautEntitlement();
             ok = true;
           }
+          await syncLocalEntitlementsToServer(); // 将 restore 结果同步到 server
           const ent = await getEntitlements();
           setPlan(ent.plan);
           setHadAstronautSubscription(ent.hadAstronautSubscription);
-          notifyAuthStateChange();
+          notifyEntitlementsChange();
           if (Platform.OS === 'web') {
             showAlert('Restored', 'You already have Astronaut Plan. Restored successfully.');
           } else {
@@ -196,7 +204,7 @@ export default function SettingsScreen() {
         const ent = await getEntitlements();
         setPlan(ent.plan);
         setHadAstronautSubscription(ent.hadAstronautSubscription);
-        notifyAuthStateChange();
+        notifyEntitlementsChange();
         showAlert('Restored', 'Purchases restored successfully.');
       } else {
         showAlert('Restore', 'No purchases to restore.');
@@ -224,7 +232,7 @@ export default function SettingsScreen() {
     const ent = await getEntitlements();
     setPlan(ent.plan);
     setHadAstronautSubscription(ent.hadAstronautSubscription);
-    notifyAuthStateChange();
+    notifyEntitlementsChange();
   };
 
   const showAlert = (title: string, message: string) => {
@@ -232,43 +240,6 @@ export default function SettingsScreen() {
       window.alert(`${title}\n\n${message}`);
     } else {
       Alert.alert(title, message);
-    }
-  };
-
-  const handleClaimTestAccount = async () => {
-    const testEmail = ADMIN_EMAILS[0];
-    setAdminEmail(testEmail);
-    setAdminClaiming(true);
-    try {
-      const ok = await claimAdminIfEligible(testEmail);
-      if (ok) {
-        setPlan('pirate_astronaut');
-        showAlert('Test account unlocked', 'chenk@dybridge.com now has unlimited Compass and Strategy Lab.');
-      } else {
-        showAlert('Error', 'Could not unlock test account.');
-      }
-    } catch {
-      showAlert('Error', 'Failed to claim admin.');
-    } finally {
-      setAdminClaiming(false);
-    }
-  };
-
-  const handleClaimAdmin = async () => {
-    if (!adminEmail.trim()) return;
-    setAdminClaiming(true);
-    try {
-      const ok = await claimAdminIfEligible(adminEmail);
-      if (ok) {
-        setPlan('pirate_astronaut');
-        showAlert('Admin unlocked', 'All Pro and AI features are now enabled.');
-      } else {
-        showAlert('Not eligible', 'This email is not an admin.');
-      }
-    } catch {
-      showAlert('Error', 'Failed to claim admin.');
-    } finally {
-      setAdminClaiming(false);
     }
   };
 
@@ -321,7 +292,6 @@ export default function SettingsScreen() {
               <Text style={styles.planName}>Free Plan</Text>
               <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
             </View>
-            <Text style={styles.planDesc}>10 Compass uses total. Strategy Lab: Start 1-month free trial.</Text>
           </View>
         )}
         {(plan === 'free' || plan === 'pirate') && (
@@ -330,7 +300,7 @@ export default function SettingsScreen() {
               <Text style={styles.planName}>Pirate Plan</Text>
               {plan === 'pirate' && <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />}
             </View>
-            <Text style={styles.planDesc}>Unlimited Compass usage + Ad-free experience. Strategy Lab: Start 1-month free trial. {piratePrice} one-time.</Text>
+            <Text style={styles.planDesc}>Unlimited Compass usage with Ad-free experience</Text>
             {plan === 'free' && (
               <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradePirate}>
                 <Text style={styles.planUpgradeBtnText}>Upgrade to Pirate {piratePrice}</Text>
@@ -345,9 +315,7 @@ export default function SettingsScreen() {
               {(plan === 'astronaut' || plan === 'pirate_astronaut') && <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />}
             </View>
             <Text style={styles.planDesc}>
-              {hadAstronautSubscription
-                ? `Unlimited Strategy Lab + Compass. ${astronautPrice}. Includes Pirate. Cancel removes both; Pirate (if purchased) stays.`
-                : `Unlimited Strategy Lab + Compass. 1-month free trial, then ${astronautPrice}. Includes Pirate. Cancel removes both; Pirate (if purchased) stays.`}
+              Unlimited Strategy Lab + Compass usage with Ad-free experience
             </Text>
             {(plan === 'free' || plan === 'pirate') && (
               <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradeAstronaut}>
@@ -361,11 +329,9 @@ export default function SettingsScreen() {
             <Text style={styles.cancelSubBtnText}>Cancel Astronaut subscription</Text>
           </TouchableOpacity>
         )}
-        {isIAPAvailable() && (
-          <TouchableOpacity style={styles.restoreBtn} onPress={handleRestorePurchases}>
-            <Text style={styles.restoreBtnText}>Restore purchases</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity style={styles.restoreBtn} onPress={() => setFindDifficultyModalVisible(true)}>
+          <Text style={styles.restoreBtnText}>Find a difficulty?</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Location & Prize Rules */}
@@ -415,66 +381,36 @@ export default function SettingsScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Developer (collapsible) - only visible when chenk@dybridge.com is signed in */}
-      {isDeveloperEmail && (
+      {shouldShowSettingsBannerAds(plan) && (
         <View style={styles.card}>
-          <TouchableOpacity style={styles.collapseHeader} onPress={() => setDeveloperExpanded(!developerExpanded)} activeOpacity={0.7}>
-            <Text style={styles.cardTitle}>Developer</Text>
-            <Ionicons name={developerExpanded ? 'chevron-up' : 'chevron-down'} size={22} color={COLORS.textMuted} />
-          </TouchableOpacity>
-          {developerExpanded && (
-            <View style={styles.developerContent}>
-              <Text style={styles.cardDesc}>Admin unlock.</Text>
-              <TextInput
-                style={styles.adminInput}
-                placeholder="Admin email"
-                placeholderTextColor={COLORS.textMuted}
-                value={adminEmail}
-                onChangeText={setAdminEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity
-                style={[styles.adminClaimBtn, adminClaiming && styles.adminClaimBtnDisabled]}
-                onPress={handleClaimAdmin}
-                disabled={adminClaiming || !adminEmail.trim()}
-              >
-                {adminClaiming ? (
-                  <ActivityIndicator size="small" color={COLORS.text} />
-                ) : (
-                  <Text style={styles.adminClaimBtnText}>Claim admin</Text>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.adminClaimBtn, styles.adminClaimBtnSecondary, adminClaiming && styles.adminClaimBtnDisabled]}
-                onPress={handleClaimTestAccount}
-                disabled={adminClaiming}
-              >
-                <Text style={styles.adminClaimBtnTextSecondary}>Quick unlock (chenk@dybridge.com)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.adminClaimBtn, styles.adminClaimBtnSecondary, syncingToServer && styles.adminClaimBtnDisabled]}
-                onPress={async () => {
-                  setSyncingToServer(true);
-                  try {
-                    await syncLocalEntitlementsToServer();
-                    showAlert('Synced', 'Local entitlements synced to server.');
-                    getEntitlements().then((e) => setPlan(e.plan));
-                  } catch {
-                    showAlert('Error', 'Sync failed.');
-                  } finally {
-                    setSyncingToServer(false);
-                  }
-                }}
-                disabled={syncingToServer}
-              >
-                {syncingToServer ? <ActivityIndicator size="small" color={COLORS.gold} /> : <Text style={styles.adminClaimBtnTextSecondary}>Sync entitlements to server</Text>}
-              </TouchableOpacity>
-            </View>
-          )}
+          <BannerAdPlaceholder testId="settings-bottom" shouldShowBanner />
         </View>
       )}
+
+      <Modal visible={findDifficultyModalVisible} transparent animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setFindDifficultyModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Find a difficulty?</Text>
+            <Text style={styles.findDifficultyMsg}>
+              If you need help or have a question, contact us at contact@dybridge.com
+            </Text>
+            <TouchableOpacity style={styles.modalConfirm} onPress={() => setFindDifficultyModalVisible(false)}>
+              <Text style={styles.modalConfirmText}>Got it</Text>
+            </TouchableOpacity>
+            {isIAPAvailable() && (
+              <TouchableOpacity
+                style={styles.restoreBtnBelowGotIt}
+                onPress={() => {
+                  setFindDifficultyModalVisible(false);
+                  handleRestorePurchases();
+                }}
+              >
+                <Text style={styles.restoreBtnText}>Restore purchases</Text>
+              </TouchableOpacity>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       <Modal visible={overrideModal} transparent animationType="fade">
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setOverrideModal(false)}>
@@ -651,6 +587,8 @@ const styles = StyleSheet.create({
   },
   cancelSubBtnText: { color: COLORS.error, fontSize: 14, fontWeight: '600' },
   restoreBtn: { marginTop: 12, alignItems: 'center' },
+  /** Find a difficulty modal: link below primary "Got it" */
+  restoreBtnBelowGotIt: { marginTop: 16, alignItems: 'center', paddingVertical: 8 },
   restoreBtnText: { color: COLORS.textMuted, fontSize: 14 },
   adminInput: {
     backgroundColor: COLORS.bgCard,
@@ -680,6 +618,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
   modalContent: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, maxHeight: 400 },
   modalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 16 },
+  findDifficultyMsg: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 22, marginBottom: 16 },
   modalRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
   modalTab: { flex: 1, padding: 12, borderRadius: 10, backgroundColor: COLORS.bgElevated, alignItems: 'center' },
   modalTabActive: { backgroundColor: COLORS.primary },

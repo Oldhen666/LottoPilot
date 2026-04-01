@@ -14,6 +14,8 @@ export interface StrategySet {
   featureWeights: Record<FeatureId, number>;
   /** 1–3 lucky numbers (personal preference, not statistical signal). Optional. */
   luckyNumbers?: number[];
+  /** Day of month 1–31 for personal bias; optional. */
+  luckyBirthdayDay?: number;
   /** Lucky bias strength. Max influence ≤5%. Only affects balanced-pool selection. */
   luckyBiasStrength?: LuckyBiasStrength;
   createdAt: string; // ISO

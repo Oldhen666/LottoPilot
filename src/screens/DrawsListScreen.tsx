@@ -13,9 +13,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import { useDraws, invalidateDrawsCache } from '../hooks/useDraws';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { getEntitlements, onEntitlementsChange, type UserPlan } from '../services/entitlements';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import type { LotteryId } from '../types/lottery';
-import type { Draw } from '../types/lottery';
 
 interface Props {
   lotteryId: LotteryId;
@@ -24,11 +25,19 @@ interface Props {
 
 export default function DrawsListScreen({ lotteryId, onBack }: Props) {
   const insets = useSafeAreaInsets();
+  const [userPlan, setUserPlan] = useState<UserPlan>('free');
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const onRefresh = useCallback(() => {
     invalidateDrawsCache(lotteryId);
     setRefetchTrigger((n) => n + 1);
   }, [lotteryId]);
+
+  useEffect(() => {
+    getEntitlements().then((e) => setUserPlan(e.plan));
+    return onEntitlementsChange(() => {
+      getEntitlements().then((ent) => setUserPlan(ent.plan));
+    });
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -42,69 +51,91 @@ export default function DrawsListScreen({ lotteryId, onBack }: Props) {
   const def = LOTTERY_DEFS[lotteryId];
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}>
-      <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-        <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
-        <Text style={styles.backText}>Back</Text>
-      </TouchableOpacity>
-      <Text style={styles.title}>{def?.name} - Past Draws</Text>
+    <View style={[styles.outer, { paddingTop: insets.top + SPACING.screenPadding }]}>
+      <View style={[styles.container, { paddingHorizontal: SPACING.screenPadding, flex: 1 }]}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
+          <Text style={styles.backText}>Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>{def?.name} - Past Draws</Text>
 
-      {loading ? (
-        <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
-      ) : error ? (
-        <View style={styles.errorBox}>
-          <Text style={styles.error}>{error}</Text>
-          <Text style={styles.errorHint}>Ensure EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are in .env, then restart dev server.</Text>
-          <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
-            <Ionicons name="refresh" size={18} color={COLORS.text} />
-            <Text style={styles.refreshBtnText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      ) : draws.length === 0 ? (
-        <View style={styles.emptyBox}>
-          <Text style={styles.empty}>No draws yet</Text>
-          <Text style={styles.emptyHint}>Tap Refresh to sync from Supabase. If empty, run: npm run scrape</Text>
-          <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
-            <Ionicons name="refresh" size={18} color={COLORS.text} />
-            <Text style={styles.refreshBtnText}>Refresh from Supabase</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <FlatList
-          data={draws}
-          ListHeaderComponent={
-            <TouchableOpacity style={styles.refreshBtnSmall} onPress={onRefresh} disabled={loading}>
-              <Ionicons name="refresh" size={16} color={COLORS.textSecondary} />
-              <Text style={styles.refreshBtnSmallText}>Refresh</Text>
+        {loading ? (
+          <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
+        ) : error ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.error}>{error}</Text>
+            <Text style={styles.errorHint}>Ensure EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are in .env, then restart dev server.</Text>
+            <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
+              <Ionicons name="refresh" size={18} color={COLORS.text} />
+              <Text style={styles.refreshBtnText}>Retry</Text>
             </TouchableOpacity>
-          }
-          keyExtractor={(d) => d.draw_date}
-          contentContainerStyle={styles.list}
-          renderItem={({ item }) => (
-            <View style={styles.card}>
-              <Text style={styles.drawDate}>{item.draw_date}</Text>
-              <View style={styles.numberRow}>
-                {item.winning_numbers.map((n, i) => (
-                  <View key={i} style={styles.ball}>
-                    <Text style={styles.ballText}>{n}</Text>
-                  </View>
-                ))}
-                {item.special_numbers?.map((n, i) => (
-                  <View key={`s${i}`} style={[styles.ball, styles.ballSpecial]}>
-                    <Text style={styles.ballText}>{n}</Text>
-                  </View>
-                ))}
+          </View>
+        ) : draws.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Text style={styles.empty}>No draws yet</Text>
+            <Text style={styles.emptyHint}>Tap Refresh to sync from Supabase. If empty, run: npm run scrape</Text>
+            <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
+              <Ionicons name="refresh" size={18} color={COLORS.text} />
+              <Text style={styles.refreshBtnText}>Refresh from Supabase</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <FlatList
+            data={draws}
+            ListHeaderComponent={
+              <TouchableOpacity style={styles.refreshBtnSmall} onPress={onRefresh} disabled={loading}>
+                <Ionicons name="refresh" size={16} color={COLORS.textSecondary} />
+                <Text style={styles.refreshBtnSmallText}>Refresh</Text>
+              </TouchableOpacity>
+            }
+            keyExtractor={(d) => d.draw_date}
+            contentContainerStyle={styles.list}
+            style={styles.listFlex}
+            renderItem={({ item }) => (
+              <View style={styles.card}>
+                <Text style={styles.drawDate}>{item.draw_date}</Text>
+                <View style={styles.numberRow}>
+                  {item.winning_numbers.map((n, i) => (
+                    <View key={i} style={styles.ball}>
+                      <Text style={styles.ballText}>{n}</Text>
+                    </View>
+                  ))}
+                  {item.special_numbers?.map((n, i) => (
+                    <View key={`s${i}`} style={[styles.ball, styles.ballSpecial]}>
+                      <Text style={styles.ballText}>{n}</Text>
+                    </View>
+                  ))}
+                </View>
               </View>
-            </View>
-          )}
+            )}
+          />
+        )}
+      </View>
+      <View style={[styles.bannerWrap, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <BannerAdPlaceholder
+          testId="draws-history-bottom"
+          userPlan={userPlan}
+          containerStyle={styles.bannerAdSlot}
         />
-      )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg, paddingHorizontal: SPACING.screenPadding },
+  outer: { flex: 1, backgroundColor: COLORS.bg },
+  container: { backgroundColor: COLORS.bg },
+  listFlex: { flex: 1 },
+  bannerWrap: {
+    width: '100%',
+    paddingHorizontal: SPACING.screenPadding,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.bgElevated,
+    backgroundColor: COLORS.bg,
+  },
+  /** Tight to tab bar: no extra vertical margin from BannerAdPlaceholder */
+  bannerAdSlot: { marginVertical: 0 },
   backBtn: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   backText: { color: COLORS.textSecondary, fontSize: 16, marginLeft: 6 },
   title: { fontSize: 22, fontWeight: '700', color: COLORS.text, marginBottom: 20 },

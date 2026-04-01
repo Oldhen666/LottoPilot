@@ -25,13 +25,32 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import { getRecords } from '../db/sqlite';
 import { fetchDraws, getCurrentUserEmail, onAuthStateChange } from '../services/supabase';
-import { getStrategyLabTotalCount, incrementStrategyLabTotalUsage, addToPickBook, getPickBookRecords, type PickBookRecord } from '../db/sqlite';
-import { getEntitlements, setProUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, type UserPlan } from '../services/entitlements';
-import { notifyAuthStateChange } from '../services/supabase';
+import { incrementStrategyLabTotalUsage, addToPickBook, getPickBookRecords, type PickBookRecord } from '../db/sqlite';
+import {
+  getEntitlements,
+  setProUnlocked,
+  setHadAstronautSubscription as setHadAstronautEntitlement,
+  notifyEntitlementsChange,
+  onEntitlementsChange,
+  type UserPlan,
+} from '../services/entitlements';
+import { shouldShowStrategyLabBannerAds } from '../services/adManager';
+import {
+  needsRewardGateForGenerate,
+  needsRewardGateForRefine,
+  recordStrategyLabGenerateSuccess,
+  recordStrategyLabRefineSuccess,
+  setStrategyLabGenerateCountAfterAd,
+  setStrategyLabRefineCountAfterAd,
+} from '../services/strategyLabGate';
+import { getTotalRefinesForSet, incrementRefineTotalForSet } from '../services/strategyRefineStats';
+import { showRewardedAdForStrategyLab, REWARDED_AD_MESSAGES } from '../services/rewardedAdService';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
 import { isIAPAvailable, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatAstronautPrice } from '../services/iap';
 import {
   getStrategySets,
   getActiveStrategySet,
+  getActiveSetId,
   setActiveSetId,
   createStrategySet,
   updateStrategySet,
@@ -39,6 +58,7 @@ import {
   applyFeatureAdjustment,
   coarseAdjust,
   getMaxSets,
+  saveStrategySets,
 } from '../services/strategySetStorage';
 import { generateFromStrategySet } from '../services/strategyEngine';
 import {
@@ -50,11 +70,13 @@ import {
   computeShapeSummary,
   computeDeltaSummary,
   computeRefineProposal,
+  filterRefineDeltasForPlan,
 } from '../services/aiRefine';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import {
   STRATEGY_FEATURES,
   FEATURE_CATEGORY_COLORS,
+  isAstronautOnlyFeature,
   type FeatureCategory,
   type FeatureId,
 } from '../constants/strategyFeatures';
@@ -64,8 +86,6 @@ import type { CandidatePick } from '../utils/localAnalysis';
 
 const DISCLAIMER = 'This system refines strategy behavior based on feedback. It does not predict lottery outcomes.';
 const LUCKY_BIAS_DISCLAIMER = 'Lucky numbers add a personal preference layer. They do not affect draw randomness or probabilities.';
-const TOTAL_LIMIT_FREE = 0;
-const TOTAL_LIMIT_PIRATE = 0;
 
 const LUCKY_BIAS_OPTIONS: { value: LuckyBiasStrength; label: string; fill: number }[] = [
   { value: 'off', label: 'Off', fill: 0 },
@@ -84,14 +104,14 @@ function showAlert(title: string, message: string, onOk?: () => void) {
 }
 
 /** Replace with your Strategy Lab tutorial video URL */
-const STRATEGY_LAB_YOUTUBE_URL = 'https://www.youtube.com/watch?v=YOUR_VIDEO_ID';
+const STRATEGY_LAB_YOUTUBE_URL = 'https://youtu.be/xPWaAPnnyHs';
 
 const STRATEGY_LAB_GUIDE_STEPS = [
-  { icon: 'layers' as const, title: 'Strategy Sets', text: 'A Strategy Set is an independent experiment. Each set has its own parameters and number generation logic. Create multiple sets to test different ideas and compare performance over time. Pro users can create up to 10 sets.' },
+  { icon: 'layers' as const, title: 'Strategy Sets', text: 'A Strategy Set is an independent experiment. Free and Pirate plans include Sets A–C. Astronaut (trial or paid) unlocks up to 10 sets.' },
   { icon: 'flask' as const, title: 'Feature Weights', text: 'Your strategy is controlled by feature weights that influence how numbers are generated. Structure: odd/even, high/low balance. Position: number behavior in specific positions. Trend: hot numbers, overdue numbers. Risk: how aggressive the strategy is. Adjust with up/down arrows or tap the tube (0–100).' },
   { icon: 'heart' as const, title: 'Lucky Numbers', text: 'Add 1–3 personal favorite numbers and set bias strength (Off/Low/Medium/High). Max influence ≤5%. Personal preference only—does not affect probabilities.' },
-  { icon: 'sparkles' as const, title: 'Generate Picks', text: 'Select lottery, then tap Generate Picks. Results stored by date. Requires Astronaut (1-month free trial, then $0.99/mo).' },
-  { icon: 'construct' as const, title: 'Generate & Refine', text: 'After each draw, compare your picks with actual results. Use AI Refine: enter winning numbers and your picks. AI suggests small weight adjustments (±5% max) based on shape feedback. Improve your strategy over time. Does not predict outcomes.' },
+  { icon: 'sparkles' as const, title: 'Generate Picks', text: 'Select lottery, then tap Generate Picks. Every 2 successful generates, the next one requires a short ad or Astronaut plan.' },
+  { icon: 'construct' as const, title: 'Generate & Refine', text: 'After each draw, compare your picks with actual results. Use AI Refine: enter winning numbers and your picks. AI suggests small weight adjustments (±5% max). Every 2 successful Refines, the next requires a rewarded ad or Astronaut plan. Does not predict outcomes.' },
 ];
 export default function StrategyLabScreen() {
   const insets = useSafeAreaInsets();
@@ -100,9 +120,10 @@ export default function StrategyLabScreen() {
   const [plan, setPlan] = useState<UserPlan>('free');
   const [proUnlocked, setProUnlockedState] = useState(false);
   const [hadAstronautSubscription, setHadAstronautSubscription] = useState(false);
-  const [usageCount, setUsageCount] = useState(0);
-  const [showGenerateConfirm, setShowGenerateConfirm] = useState(false);
   const pendingGenerateRef = useRef<{ history: { winning_numbers: number[]; special_numbers?: number[] }[]; drawDate: string } | null>(null);
+  const strategyGateKindRef = useRef<'generate' | 'refine'>('generate');
+  const [strategyLabGateVisible, setStrategyLabGateVisible] = useState(false);
+  const [strategyLabGateKind, setStrategyLabGateKind] = useState<'generate' | 'refine'>('generate');
   const [sets, setSets] = useState<StrategySet[]>([]);
   const [activeSet, setActiveSet] = useState<StrategySet | null>(null);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');
@@ -119,6 +140,7 @@ export default function StrategyLabScreen() {
   const [pastDrawsForRefine, setPastDrawsForRefine] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] }[]>([]);
   const [pastDrawsLoading, setPastDrawsLoading] = useState(false);
   const [pastDrawsDropdownOpen, setPastDrawsDropdownOpen] = useState(false);
+  const [lotteryDropdownOpen, setLotteryDropdownOpen] = useState(false);
   const [showPickBookInRefine, setShowPickBookInRefine] = useState(false);
   const [refinePickBookRecords, setRefinePickBookRecords] = useState<PickBookRecord[]>([]);
   const [refinePickBookLoading, setRefinePickBookLoading] = useState(false);
@@ -126,6 +148,8 @@ export default function StrategyLabScreen() {
   const [editingValue, setEditingValue] = useState('');
   const [editingLuckyIndex, setEditingLuckyIndex] = useState<number | null>(null);
   const [editingLuckyValue, setEditingLuckyValue] = useState('');
+  const [editingBirthday, setEditingBirthday] = useState(false);
+  const [editingBirthdayValue, setEditingBirthdayValue] = useState('');
   const [deleteSetTarget, setDeleteSetTarget] = useState<StrategySet | null>(null);
   const [inBookDateKeys, setInBookDateKeys] = useState<Set<string>>(new Set());
   const [astronautPrice, setAstronautPrice] = useState('$0.99/mo');
@@ -133,36 +157,61 @@ export default function StrategyLabScreen() {
   const [refineScrollY, setRefineScrollY] = useState(0);
   const [refineContentH, setRefineContentH] = useState(0);
   const [refineLayoutH, setRefineLayoutH] = useState(0);
+  /** Total times user applied ("Confirm") a refinement for the active Strategy Set */
+  const [refineApplyTotalForSet, setRefineApplyTotalForSet] = useState(0);
 
   const loadInBookDateKeys = useCallback(async () => {
-    const records = await getPickBookRecords();
+    if (!activeSet) {
+      setInBookDateKeys(new Set());
+      return;
+    }
+    const records = await getPickBookRecords({
+      lotteryId: selectedLottery,
+      strategySetId: activeSet.id,
+    });
     setInBookDateKeys(new Set(records.map((r) => `${r.lottery_id}:${r.draw_date}`)));
-  }, []);
+  }, [activeSet?.id, selectedLottery]);
 
   const loadState = useCallback(async () => {
     const ent = await getEntitlements();
     setPlan(ent.plan);
     setProUnlockedState(ent.proUnlocked);
     setHadAstronautSubscription(ent.hadAstronautSubscription);
-    const count = await getStrategyLabTotalCount();
-    setUsageCount(count);
   }, []);
 
   const loadSets = useCallback(async () => {
-    const list = await getStrategySets(selectedLottery);
+    let list = await getStrategySets(selectedLottery);
+    await saveStrategySets(selectedLottery, list);
+    list = await getStrategySets(selectedLottery);
+    const activeId = await getActiveSetId(selectedLottery);
+    if (activeId && !list.some((s) => s.id === activeId) && list[0]) {
+      await setActiveSetId(selectedLottery, list[0].id);
+    }
     setSets(list);
     const active = await getActiveStrategySet(selectedLottery);
     setActiveSet(active);
   }, [selectedLottery]);
 
   const loadPicksByDate = useCallback(async () => {
-    const stored = await getGeneratedPicks(selectedLottery);
+    if (!activeSet) {
+      setPicksByDate({});
+      return;
+    }
+    const stored = await getGeneratedPicks(selectedLottery, activeSet.id);
     setPicksByDate(stored);
-  }, [selectedLottery]);
+  }, [selectedLottery, activeSet?.id]);
 
   useEffect(() => {
     loadState();
   }, [loadState]);
+
+  useEffect(() => {
+    const unsub = onEntitlementsChange(() => {
+      loadState();
+      loadSets();
+    });
+    return unsub;
+  }, [loadState, loadSets]);
 
   useEffect(() => {
     const unsub = onPurchaseSuccess(loadState);
@@ -201,8 +250,11 @@ export default function StrategyLabScreen() {
       getCurrentUserEmail().then((email) => {
         setIsSignedIn(email !== null);
         loadState();
+        loadSets();
+        loadPicksByDate();
+        loadInBookDateKeys();
       });
-    }, [loadState])
+    }, [loadState, loadSets, loadPicksByDate, loadInBookDateKeys])
   );
 
   const userPicksSpecialCount = ['lotto_max', 'lotto_649'].includes(selectedLottery) ? 0 : (LOTTERY_DEFS[selectedLottery]?.special_count ?? 1);
@@ -221,17 +273,34 @@ export default function StrategyLabScreen() {
     });
   }, [showRefineModal, selectedLottery]);
 
+  useEffect(() => {
+    if (!showRefineModal || !activeSet?.id) {
+      setRefineApplyTotalForSet(0);
+      return;
+    }
+    getTotalRefinesForSet(activeSet.id).then(setRefineApplyTotalForSet);
+  }, [showRefineModal, activeSet?.id]);
+
   const loadRefinePickBookRecords = useCallback(async () => {
+    if (!activeSet) {
+      setRefinePickBookRecords([]);
+      return;
+    }
     setRefinePickBookLoading(true);
     try {
-      const list = await getPickBookRecords({ sortOrder: 'desc' });
-      setRefinePickBookRecords(list.filter((r) => r.lottery_id === selectedLottery));
+      const list = await getPickBookRecords({
+        sortOrder: 'desc',
+        lotteryId: selectedLottery,
+        strategySetId: activeSet.id,
+        includeFromCheckLines: true,
+      });
+      setRefinePickBookRecords(list);
     } catch {
       setRefinePickBookRecords([]);
     } finally {
       setRefinePickBookLoading(false);
     }
-  }, [selectedLottery]);
+  }, [selectedLottery, activeSet?.id]);
 
   useEffect(() => {
     if (showPickBookInRefine) loadRefinePickBookRecords();
@@ -255,10 +324,54 @@ export default function StrategyLabScreen() {
       .finally(() => setPastDrawsLoading(false));
   }, [showRefineModal, selectedLottery]);
 
-  const totalLimit = plan === 'pirate' || plan === 'pirate_astronaut' ? TOTAL_LIMIT_PIRATE : TOTAL_LIMIT_FREE;
-  const canGenerate = proUnlocked || usageCount < totalLimit;
-  /** Web 开发时 IAP 不可用，允许测试 Refine Strategy */
+  /** Web dev: Refine Strategy works without IAP on web */
   const devUnlockRefine = __DEV__ && Platform.OS === 'web';
+
+  const doGenerate = useCallback(async (history: { winning_numbers: number[]; special_numbers?: number[] }[], drawDate: string) => {
+    if (!activeSet) return;
+    setLoading(true);
+    setCandidates([]);
+    try {
+      const picks = generateFromStrategySet(selectedLottery, history, activeSet, 1);
+      await setGeneratedPicksForDate(selectedLottery, activeSet.id, drawDate, picks);
+      await loadPicksByDate();
+      setCandidates(picks);
+        if (!proUnlocked) {
+          await incrementStrategyLabTotalUsage();
+          await recordStrategyLabGenerateSuccess();
+      }
+    } catch {
+      showAlert('Error', 'Could not generate picks. Try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedLottery, activeSet, proUnlocked, loadPicksByDate]);
+
+  const proceedToGenerateAfterChecks = useCallback(
+    async (history: { winning_numbers: number[]; special_numbers?: number[] }[], drawDate: string) => {
+      const existingToday = picksByDate[drawDate];
+      if (existingToday && existingToday.length > 0) {
+        if (Platform.OS === 'web' && typeof window !== 'undefined') {
+          const ok = window.confirm(
+            'You already have generated picks for today. Generating again will replace them. Continue?'
+          );
+          if (ok) await doGenerate(history, drawDate);
+          return;
+        }
+        Alert.alert(
+          'Overwrite previous record?',
+          'You already have generated picks for today. Generating again will replace them.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Replace', onPress: () => doGenerate(history, drawDate) },
+          ]
+        );
+        return;
+      }
+      await doGenerate(history, drawDate);
+    },
+    [picksByDate, doGenerate]
+  );
 
   const handleGenerate = async () => {
     if (!activeSet) {
@@ -291,64 +404,20 @@ export default function StrategyLabScreen() {
     }
 
     const drawDate = getTodayDateString();
-    const existingToday = picksByDate[drawDate];
-    if (existingToday && existingToday.length > 0) {
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        const ok = window.confirm('You already have generated picks for today. Generating again will replace them. Continue?');
-        if (ok) await doGenerate(history, drawDate);
-        return;
-      }
-      Alert.alert(
-        'Overwrite previous record?',
-        'You already have generated picks for today. Generating again will replace them.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Replace', onPress: () => doGenerate(history, drawDate) },
-        ]
-      );
-      return;
-    }
-
-    if (!proUnlocked && usageCount >= totalLimit) {
-      setShowPaywall(true);
-      return;
-    }
 
     if (!proUnlocked) {
-      pendingGenerateRef.current = { history, drawDate };
-      setShowGenerateConfirm(true);
-      return;
+      const gate = await needsRewardGateForGenerate(proUnlocked);
+      if (gate) {
+        pendingGenerateRef.current = { history, drawDate };
+        strategyGateKindRef.current = 'generate';
+        setStrategyLabGateKind('generate');
+        setStrategyLabGateVisible(true);
+        return;
+      }
     }
 
-    await doGenerate(history, drawDate);
+    await proceedToGenerateAfterChecks(history, drawDate);
   };
-
-  const doGenerate = useCallback(async (history: { winning_numbers: number[]; special_numbers?: number[] }[], drawDate: string) => {
-    if (!activeSet) return;
-      setLoading(true);
-      setCandidates([]);
-      try {
-        const picks = generateFromStrategySet(selectedLottery, history, activeSet, 1);
-        await setGeneratedPicksForDate(selectedLottery, drawDate, picks);
-        await loadPicksByDate();
-        setCandidates(picks);
-        if (!proUnlocked) {
-          await incrementStrategyLabTotalUsage();
-          setUsageCount((c) => c + 1);
-        }
-      } catch {
-        showAlert('Error', 'Could not generate picks. Try again.');
-      } finally {
-        setLoading(false);
-      }
-  }, [selectedLottery, activeSet, proUnlocked, loadPicksByDate]);
-
-  const handleConfirmGenerateModal = useCallback(async () => {
-    const pending = pendingGenerateRef.current;
-    setShowGenerateConfirm(false);
-    pendingGenerateRef.current = null;
-    if (pending) await doGenerate(pending.history, pending.drawDate);
-  }, [doGenerate]);
 
   const handleSwitchSet = async (set: StrategySet) => {
     await setActiveSetId(selectedLottery, set.id);
@@ -368,6 +437,7 @@ export default function StrategyLabScreen() {
 
   const handleCoarseAdjust = async (featureId: FeatureId, direction: 'more' | 'less') => {
     if (!activeSet) return;
+    if (!proUnlocked && isAstronautOnlyFeature(featureId)) return;
     const current = activeSet.featureWeights[featureId] ?? 0.5;
     const next = coarseAdjust(current, direction);
     const updated = { ...activeSet, featureWeights: { ...activeSet.featureWeights, [featureId]: next } };
@@ -400,7 +470,28 @@ export default function StrategyLabScreen() {
     setActiveSet(updated);
   };
 
+  const handleBirthdayDayCommit = async (raw: string) => {
+    if (!activeSet) return;
+    const digits = raw.replace(/\D/g, '');
+    if (digits === '') {
+      const updated = { ...activeSet, luckyBirthdayDay: undefined };
+      await updateStrategySet(updated);
+      setActiveSet(updated);
+      return;
+    }
+    let n = parseInt(digits, 10);
+    if (isNaN(n)) return;
+    n = Math.max(1, Math.min(31, n));
+    const updated = { ...activeSet, luckyBirthdayDay: n };
+    await updateStrategySet(updated);
+    setActiveSet(updated);
+  };
+
   const handleOpenEdit = (featureId: FeatureId) => {
+    if (!proUnlocked && isAstronautOnlyFeature(featureId)) {
+      setShowPaywall(true);
+      return;
+    }
     const w = activeSet?.featureWeights[featureId] ?? 0.5;
     setEditingFeature(featureId);
     setEditingValue(Math.round(w * 100).toString());
@@ -408,6 +499,11 @@ export default function StrategyLabScreen() {
 
   const handleConfirmEdit = async () => {
     if (!editingFeature || !activeSet) return;
+    if (!proUnlocked && isAstronautOnlyFeature(editingFeature)) {
+      setEditingFeature(null);
+      setEditingValue('');
+      return;
+    }
     const parsed = parseFloat(editingValue);
     if (isNaN(parsed) || parsed < 0 || parsed > 100) {
       showAlert('Invalid', 'Enter a number between 0 and 100.');
@@ -506,14 +602,23 @@ export default function StrategyLabScreen() {
         deltaSummary,
       });
 
+      const refinedDeltas = filterRefineDeltasForPlan(proposal.deltas, proUnlocked);
+      let reasoning = proposal.reasoning;
+      if (!proUnlocked && proposal.deltas.some((d) => isAstronautOnlyFeature(d.featureId as FeatureId))) {
+        reasoning += '\n\nSuggestions that target Astronaut-only weights were skipped. Upgrade for full Refine on Risk, Sum deviation, gaps, and Edge/Mid.';
+      }
+
       setRefineProposal({
-        deltas: proposal.deltas.map((d) => ({
+        deltas: refinedDeltas.map((d) => ({
           featureId: d.featureId,
           direction: d.direction,
           magnitude: d.magnitude,
         })),
-        reasoning: proposal.reasoning,
+        reasoning,
       });
+      if (!proUnlocked) {
+        await recordStrategyLabRefineSuccess();
+      }
     } catch {
       setRefineProposal(null);
     } finally {
@@ -521,8 +626,7 @@ export default function StrategyLabScreen() {
     }
   };
 
-  const handleRefine = () => {
-    if (!activeSet) return;
+  const runRefineConfirm = () => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (window.confirm(REFINE_CONFIRM_MSG)) doRefine();
       return;
@@ -532,6 +636,64 @@ export default function StrategyLabScreen() {
       { text: 'Compute', onPress: () => doRefine() },
     ]);
   };
+
+  const handleRefine = async () => {
+    if (!activeSet) return;
+    if (!proUnlocked && !devUnlockRefine) {
+      if (await needsRewardGateForRefine(proUnlocked)) {
+        strategyGateKindRef.current = 'refine';
+        setStrategyLabGateKind('refine');
+        setStrategyLabGateVisible(true);
+        return;
+      }
+    }
+    runRefineConfirm();
+  };
+
+  const handleStrategyLabGateWatchAd = async () => {
+    if (Platform.OS === 'web') {
+      showAlert(
+        'Not available on web',
+        'Rewarded ads are not available in the browser. Use the iOS or Android app, or upgrade to Astronaut plan.'
+      );
+      return;
+    }
+    const ok = await showRewardedAdForStrategyLab();
+    if (!ok) {
+      showAlert('Ad required', REWARDED_AD_MESSAGES.adLoadFailed);
+      return;
+    }
+    setStrategyLabGateVisible(false);
+    const kind = strategyGateKindRef.current;
+    if (kind === 'generate') {
+      await setStrategyLabGenerateCountAfterAd();
+      const p = pendingGenerateRef.current;
+      pendingGenerateRef.current = null;
+      if (p) await proceedToGenerateAfterChecks(p.history, p.drawDate);
+    } else {
+      await setStrategyLabRefineCountAfterAd();
+      await doRefine();
+    }
+  };
+
+  const handleStrategyLabGateSignIn = () => {
+    setStrategyLabGateVisible(false);
+    (navigation as { navigate: (s: string) => void }).navigate('Login');
+  };
+
+  const handleStrategyLabGateTrialOrUpgrade = () => {
+    setStrategyLabGateVisible(false);
+    setShowPaywall(true);
+  };
+
+  const closeRefineModal = useCallback(() => {
+    setShowRefineModal(false);
+    setRefineProposal(null);
+    setPastDrawsDropdownOpen(false);
+    setShowPickBookInRefine(false);
+    setWinningNumbersArray([]);
+    setUserPicksArray([]);
+  }, []);
 
   const handleConfirmRefine = async () => {
     if (!refineProposal || !activeSet) return;
@@ -545,12 +707,9 @@ export default function StrategyLabScreen() {
         }))
       );
       setActiveSet(updated);
-      setShowRefineModal(false);
-      setRefineProposal(null);
-      setPastDrawsDropdownOpen(false);
-      setShowPickBookInRefine(false);
-      setWinningNumbersArray([]);
-      setUserPicksArray([]);
+      const nextTotal = await incrementRefineTotalForSet(activeSet.id);
+      setRefineApplyTotalForSet(nextTotal);
+      closeRefineModal();
     } catch {
       showAlert('Error', 'Failed to apply refinement.');
     }
@@ -592,7 +751,7 @@ export default function StrategyLabScreen() {
           await setHadAstronautEntitlement();
         }
         loadState();
-        notifyAuthStateChange();
+        notifyEntitlementsChange();
         return;
       }
       showAlert('Purchase failed', msg || 'Could not complete purchase.');
@@ -613,6 +772,7 @@ export default function StrategyLabScreen() {
   };
 
   const categories: FeatureCategory[] = ['structure', 'position', 'trend', 'risk'];
+  const showStrategyLabBanners = shouldShowStrategyLabBannerAds(plan, proUnlocked);
 
   return (
     <ScrollView
@@ -629,38 +789,32 @@ export default function StrategyLabScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.usageBar}>
-        <View style={styles.usageRow}>
-          {proUnlocked ? (
-            <Text style={styles.usageText}>Unlimited simulations (Astronaut)</Text>
-          ) : (
-            <>
-              <Text style={styles.usageText}>Strategy Lab requires Astronaut plan</Text>
-              <TouchableOpacity onPress={() => setShowPaywall(true)} style={styles.upgradeLink}>
-                <Text style={styles.upgradeLinkText}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start 1-month free trial'}</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
-      </View>
-
-      <Modal visible={showGenerateConfirm} transparent animationType="fade">
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowGenerateConfirm(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.generateConfirmCard}>
-            <Text style={styles.generateConfirmTitle}>Generate picks?</Text>
-            <Text style={styles.generateConfirmText}>
-              This will add 1 set of picks for today.
+      <Modal visible={strategyLabGateVisible} transparent animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setStrategyLabGateVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.strategyGateCard}>
+            <Text style={styles.strategyGateTitle}>Continue with Strategy Lab</Text>
+            <Text style={styles.strategyGateMsg}>
+              {strategyLabGateKind === 'generate'
+                ? "You've completed 2 Generate runs. The next one requires a rewarded ad, or sign in for a free trial, or upgrade to Astronaut."
+                : "You've completed 2 Refine runs. The next one requires a rewarded ad, or sign in for a free trial, or upgrade to Astronaut."}
             </Text>
-            <View style={styles.generateConfirmActions}>
-              <TouchableOpacity style={styles.generateConfirmBtn} onPress={() => setShowGenerateConfirm(false)}>
-                <Text style={styles.generateConfirmBtnText}>Cancel</Text>
+            <TouchableOpacity style={styles.strategyGatePrimary} onPress={handleStrategyLabGateWatchAd}>
+              <Text style={styles.strategyGatePrimaryText}>Watch ad</Text>
+            </TouchableOpacity>
+            {isSignedIn !== true && (
+              <TouchableOpacity style={styles.strategyGateSecondary} onPress={handleStrategyLabGateSignIn}>
+                <Text style={styles.strategyGateSecondaryText}>Sign in for free trial</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.generateConfirmBtn, styles.generateConfirmBtnPrimary]} onPress={handleConfirmGenerateModal}>
-                <Text style={styles.generateConfirmBtnTextPrimary}>Confirm</Text>
+            )}
+            {isSignedIn === true && (
+              <TouchableOpacity style={styles.strategyGateSecondary} onPress={handleStrategyLabGateTrialOrUpgrade}>
+                <Text style={styles.strategyGateSecondaryText}>
+                  {hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Free trial or upgrade to Astronaut'}
+                </Text>
               </TouchableOpacity>
-            </View>
-            <TouchableOpacity style={styles.generateConfirmUpgrade} onPress={() => { setShowGenerateConfirm(false); setShowPaywall(true); }}>
-              <Text style={styles.generateConfirmUpgradeText}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start 1-month free trial'}</Text>
+            )}
+            <TouchableOpacity style={styles.strategyGateCancel} onPress={() => setStrategyLabGateVisible(false)}>
+              <Text style={styles.strategyGateCancelText}>Cancel</Text>
             </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>
@@ -668,7 +822,11 @@ export default function StrategyLabScreen() {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Strategy Sets</Text>
-        <Text style={styles.cardDesc}>Switch between parallel strategies. Each set has its own feature weights.</Text>
+        <Text style={styles.cardDesc}>
+          {proUnlocked
+            ? 'Switch between parallel strategies (up to 10 sets). Each set has its own feature weights.'
+            : 'Up to Set A–C on this plan. Start a free trial or upgrade to Astronaut for up to 10 sets.'}
+        </Text>
         <View style={styles.setRow}>
           {sets.map((s) => (
             <TouchableOpacity
@@ -680,18 +838,37 @@ export default function StrategyLabScreen() {
               <Text style={styles.setChipText}>{s.name}</Text>
             </TouchableOpacity>
           ))}
-          {sets.length < 10 && (
+          {proUnlocked && sets.length < 10 && (
             <TouchableOpacity style={styles.setChipAdd} onPress={handleAddSet}>
               <Ionicons name="add" size={18} color={COLORS.gold} />
+            </TouchableOpacity>
+          )}
+          {!proUnlocked && (
+            <TouchableOpacity style={styles.setChipUpgrade} onPress={() => setShowPaywall(true)} activeOpacity={0.7}>
+              <Ionicons name="rocket-outline" size={18} color={COLORS.gold} />
+              <Text style={styles.setChipUpgradeText} numberOfLines={1}>
+                Upgrade: more sets & ad-free
+              </Text>
             </TouchableOpacity>
           )}
         </View>
       </View>
 
+      {showStrategyLabBanners && activeSet && (
+        <BannerAdPlaceholder
+          key={`ad-${activeSet.id}-sets-weights`}
+          testId={`strategy-sets-weights-${activeSet.id}`}
+          shouldShowBanner
+        />
+      )}
+
       {activeSet && (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Feature Weights</Text>
-          <Text style={styles.cardDesc}>Tap tube to enter value. Height = weight strength.</Text>
+          <Text style={styles.cardDesc}>
+            Tap tube to enter value. Height = weight strength.
+            {!proUnlocked ? ' Astronaut: unlocks advanced Structure, Position & Risk weights.' : ''}
+          </Text>
           {categories.map((cat) => {
             const features = STRATEGY_FEATURES.filter((f) => f.category === cat);
             if (features.length === 0) return null;
@@ -703,6 +880,8 @@ export default function StrategyLabScreen() {
                   {features.map((f) => {
                     const w = activeSet.featureWeights[f.id] ?? 0.5;
                     const pct = Math.round(w * 100).toString();
+                    const locked = !proUnlocked && isAstronautOnlyFeature(f.id as FeatureId);
+                    const fillColor = locked ? COLORS.gray400 : color;
                     return (
                       <View key={f.id} style={styles.tubeWrap}>
                         <View style={styles.tubeLeft}>
@@ -712,27 +891,39 @@ export default function StrategyLabScreen() {
                               onPress={() => handleOpenEdit(f.id as FeatureId)}
                               activeOpacity={0.8}
                             >
-                              <View style={[styles.tubeFill, { height: `${w * 100}%`, backgroundColor: color }]} />
+                              <View style={[styles.tubeFill, { height: `${w * 100}%`, backgroundColor: fillColor }]} />
                             </TouchableOpacity>
-                            <View style={styles.arrowCol}>
-                          <TouchableOpacity
-                            style={[styles.arrowBtn, w >= 1 && styles.arrowBtnDisabled]}
-                            onPress={() => handleCoarseAdjust(f.id as FeatureId, 'more')}
-                            disabled={w >= 1}
-                          >
-                            <Ionicons name="chevron-up" size={14} color={COLORS.gold} />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[styles.arrowBtn, w <= 0 && styles.arrowBtnDisabled]}
-                            onPress={() => handleCoarseAdjust(f.id as FeatureId, 'less')}
-                            disabled={w <= 0}
-                          >
-                            <Ionicons name="chevron-down" size={14} color={COLORS.gold} />
-                          </TouchableOpacity>
-                        </View>
+                            {locked ? (
+                              <TouchableOpacity
+                                style={styles.lockBtn}
+                                onPress={() => setShowPaywall(true)}
+                                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                                accessibilityRole="button"
+                                accessibilityLabel="Upgrade to adjust this weight"
+                              >
+                                <Ionicons name="lock-closed" size={15} color={COLORS.textMuted} />
+                              </TouchableOpacity>
+                            ) : (
+                              <View style={styles.arrowCol}>
+                                <TouchableOpacity
+                                  style={[styles.arrowBtn, w >= 1 && styles.arrowBtnDisabled]}
+                                  onPress={() => handleCoarseAdjust(f.id as FeatureId, 'more')}
+                                  disabled={w >= 1}
+                                >
+                                  <Ionicons name="chevron-up" size={14} color={COLORS.gold} />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[styles.arrowBtn, w <= 0 && styles.arrowBtnDisabled]}
+                                  onPress={() => handleCoarseAdjust(f.id as FeatureId, 'less')}
+                                  disabled={w <= 0}
+                                >
+                                  <Ionicons name="chevron-down" size={14} color={COLORS.gold} />
+                                </TouchableOpacity>
+                              </View>
+                            )}
                           </View>
-                          <Text style={styles.tubeValue}>{pct}</Text>
-                          <Text style={styles.tubeLabel}>{f.label}</Text>
+                          <Text style={[styles.tubeValue, locked && styles.tubeValueLocked]}>{pct}</Text>
+                          <Text style={[styles.tubeLabel, locked && styles.tubeLabelLocked]}>{f.label}</Text>
                         </View>
                       </View>
                     );
@@ -744,73 +935,106 @@ export default function StrategyLabScreen() {
           <View style={styles.tubeSection}>
             <Text style={[styles.tubeCategory, { color: '#a78bfa' }]}>Personal Bias</Text>
             <Text style={styles.luckyBiasDisclaimer}>{LUCKY_BIAS_DISCLAIMER}</Text>
-            <View style={styles.tubeRow}>
-              <View style={styles.tubeWrap}>
-                <View style={styles.tubeLeft}>
-                  <View style={styles.tubeAndArrowRow}>
-                    <TouchableOpacity
-                      style={styles.tubeContainer}
-                      onPress={() => handleLuckyBiasStrengthChange('up')}
-                      activeOpacity={0.8}
-                    >
-                      <View
-                        style={[
-                          styles.tubeFill,
-                          {
-                            height: `${(LUCKY_BIAS_OPTIONS.find((o) => o.value === (activeSet.luckyBiasStrength ?? 'off'))?.fill ?? 0) * 100}%`,
-                            backgroundColor: (activeSet.luckyBiasStrength ?? 'off') === 'off' ? COLORS.textMuted : '#a78bfa',
-                          },
-                        ]}
-                      />
+            <View style={styles.personalBiasRow}>
+              <View style={styles.luckyBiasColumn}>
+                <Text style={styles.luckyBiasGroupTitle}>Lucky Bias</Text>
+                <View style={styles.tubeAndArrowRow}>
+                  <TouchableOpacity
+                    style={styles.tubeContainer}
+                    onPress={() => handleLuckyBiasStrengthChange('up')}
+                    activeOpacity={0.8}
+                  >
+                    <View
+                      style={[
+                        styles.tubeFill,
+                        {
+                          height: `${(LUCKY_BIAS_OPTIONS.find((o) => o.value === (activeSet.luckyBiasStrength ?? 'off'))?.fill ?? 0) * 100}%`,
+                          backgroundColor: (activeSet.luckyBiasStrength ?? 'off') === 'off' ? COLORS.textMuted : '#a78bfa',
+                        },
+                      ]}
+                    />
+                  </TouchableOpacity>
+                  <View style={styles.arrowCol}>
+                    <TouchableOpacity style={styles.arrowBtn} onPress={() => handleLuckyBiasStrengthChange('up')}>
+                      <Ionicons name="chevron-up" size={14} color={COLORS.gold} />
                     </TouchableOpacity>
-                    <View style={styles.arrowCol}>
-                  <TouchableOpacity style={styles.arrowBtn} onPress={() => handleLuckyBiasStrengthChange('up')}>
-                    <Ionicons name="chevron-up" size={14} color={COLORS.gold} />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.arrowBtn} onPress={() => handleLuckyBiasStrengthChange('down')}>
-                    <Ionicons name="chevron-down" size={14} color={COLORS.gold} />
-                  </TouchableOpacity>
-                </View>
+                    <TouchableOpacity style={styles.arrowBtn} onPress={() => handleLuckyBiasStrengthChange('down')}>
+                      <Ionicons name="chevron-down" size={14} color={COLORS.gold} />
+                    </TouchableOpacity>
                   </View>
-                  <Text style={styles.tubeValue}>
-                    {LUCKY_BIAS_OPTIONS.find((o) => o.value === (activeSet.luckyBiasStrength ?? 'off'))?.label ?? 'Off'}
-                  </Text>
-                  <Text style={styles.tubeLabel}>Lucky Bias</Text>
                 </View>
+                <Text style={styles.tubeValue}>
+                  {LUCKY_BIAS_OPTIONS.find((o) => o.value === (activeSet.luckyBiasStrength ?? 'off'))?.label ?? 'Off'}
+                </Text>
               </View>
-              <View style={styles.luckyNumbersWrap}>
-                <Text style={styles.luckyNumbersLabel}>Lucky (1–3)</Text>
-                <View style={styles.luckyNumbersRow}>
-                  {[0, 1, 2].map((i) => {
-                    const def = LOTTERY_DEFS[selectedLottery];
-                    const min = def?.main_min ?? 1;
-                    const max = def?.main_max ?? 49;
-                    const val = editingLuckyIndex === i ? editingLuckyValue : ((activeSet.luckyNumbers ?? [])[i] ? String((activeSet.luckyNumbers ?? [])[i]) : '');
-                    return (
-                      <TextInput
-                        key={i}
-                        style={styles.luckyNumberCell}
-                        value={val}
-                        onChangeText={(t) => {
-                          if (editingLuckyIndex === i) setEditingLuckyValue(t.replace(/\D/g, ''));
-                        }}
-                        onFocus={() => {
-                          setEditingLuckyIndex(i);
-                          setEditingLuckyValue((activeSet.luckyNumbers ?? [])[i] ? String((activeSet.luckyNumbers ?? [])[i]) : '');
-                        }}
-                        onBlur={() => {
-                          if (editingLuckyIndex === i) {
-                            handleLuckyNumberChange(i, editingLuckyValue);
-                            setEditingLuckyIndex(null);
-                          }
-                        }}
-                        placeholder="—"
-                        placeholderTextColor={COLORS.textMuted}
-                        keyboardType="number-pad"
-                        maxLength={String(max).length}
-                      />
-                    );
-                  })}
+              <View style={styles.luckyRightColumn}>
+                <View style={styles.luckyNumbersGroup}>
+                  <Text style={styles.luckyNumbersLabel}>Lucky (1–3)</Text>
+                  <View style={styles.luckyNumbersRow}>
+                    {[0, 1, 2].map((i) => {
+                      const def = LOTTERY_DEFS[selectedLottery];
+                      const min = def?.main_min ?? 1;
+                      const max = def?.main_max ?? 49;
+                      const val = editingLuckyIndex === i ? editingLuckyValue : ((activeSet.luckyNumbers ?? [])[i] ? String((activeSet.luckyNumbers ?? [])[i]) : '');
+                      return (
+                        <TextInput
+                          key={i}
+                          style={styles.luckyNumberCell}
+                          value={val}
+                          onChangeText={(t) => {
+                            if (editingLuckyIndex === i) setEditingLuckyValue(t.replace(/\D/g, ''));
+                          }}
+                          onFocus={() => {
+                            setEditingLuckyIndex(i);
+                            setEditingLuckyValue((activeSet.luckyNumbers ?? [])[i] ? String((activeSet.luckyNumbers ?? [])[i]) : '');
+                          }}
+                          onBlur={() => {
+                            if (editingLuckyIndex === i) {
+                              handleLuckyNumberChange(i, editingLuckyValue);
+                              setEditingLuckyIndex(null);
+                            }
+                          }}
+                          placeholder="—"
+                          placeholderTextColor={COLORS.textMuted}
+                          keyboardType="number-pad"
+                          maxLength={String(max).length}
+                        />
+                      );
+                    })}
+                  </View>
+                </View>
+                <View style={styles.birthdayGroup}>
+                  <Text style={styles.luckyNumbersLabel}>Birthday date</Text>
+                  <TextInput
+                    style={styles.birthdayCell}
+                    value={
+                      editingBirthday
+                        ? editingBirthdayValue
+                        : activeSet.luckyBirthdayDay != null
+                          ? String(activeSet.luckyBirthdayDay)
+                          : ''
+                    }
+                    onChangeText={(t) => {
+                      if (editingBirthday) setEditingBirthdayValue(t.replace(/\D/g, '').slice(0, 2));
+                    }}
+                    onFocus={() => {
+                      setEditingBirthday(true);
+                      setEditingBirthdayValue(
+                        activeSet.luckyBirthdayDay != null ? String(activeSet.luckyBirthdayDay) : ''
+                      );
+                    }}
+                    onBlur={() => {
+                      if (editingBirthday) {
+                        void handleBirthdayDayCommit(editingBirthdayValue);
+                        setEditingBirthday(false);
+                        setEditingBirthdayValue('');
+                      }
+                    }}
+                    placeholder="—"
+                    placeholderTextColor={COLORS.textMuted}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                  />
                 </View>
               </View>
             </View>
@@ -821,49 +1045,63 @@ export default function StrategyLabScreen() {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Generate Picks</Text>
         <Text style={styles.cardDesc}>Uses current Strategy Set weights. Local engine only.</Text>
-        <View style={styles.lotteryRow}>
-          {(Object.keys(LOTTERY_DEFS) as LotteryId[]).map((id) => (
-            <TouchableOpacity
-              key={id}
-              style={[styles.lotteryPill, selectedLottery === id && styles.lotteryPillActive]}
-              onPress={() => setSelectedLottery(id)}
-            >
-              <Text style={styles.lotteryPillText}>{LOTTERY_DEFS[id].name}</Text>
-            </TouchableOpacity>
-          ))}
+        <View style={styles.lotteryDropdownWrap}>
+          <TouchableOpacity
+            style={styles.lotteryDropdownTrigger}
+            onPress={() => setLotteryDropdownOpen((o) => !o)}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.lotteryDropdownTriggerText} numberOfLines={1}>
+              {LOTTERY_DEFS[selectedLottery].name}
+            </Text>
+            <Ionicons
+              name={lotteryDropdownOpen ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={COLORS.gold}
+            />
+          </TouchableOpacity>
+          {lotteryDropdownOpen && (
+            <View style={styles.lotteryDropdownMenu}>
+              {(Object.keys(LOTTERY_DEFS) as LotteryId[]).map((id, idx, arr) => (
+                <TouchableOpacity
+                  key={id}
+                  style={[
+                    styles.lotteryDropdownItem,
+                    idx === arr.length - 1 && styles.lotteryDropdownItemLast,
+                    selectedLottery === id && styles.lotteryDropdownItemActive,
+                  ]}
+                  onPress={() => {
+                    setSelectedLottery(id);
+                    setLotteryDropdownOpen(false);
+                  }}
+                >
+                  <Text
+                    style={[styles.lotteryDropdownItemText, selectedLottery === id && styles.lotteryDropdownItemTextActive]}
+                  >
+                    {LOTTERY_DEFS[id].name}
+                  </Text>
+                  {selectedLottery === id && <Ionicons name="checkmark" size={18} color={COLORS.gold} />}
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
         </View>
         <TouchableOpacity
-          style={[styles.generateBtn, isSignedIn !== false && (!canGenerate || !activeSet || loading) && styles.generateBtnDisabled]}
+          style={[styles.generateBtn, (!activeSet || loading) && styles.generateBtnDisabled]}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           onPress={() => {
-            if (isSignedIn === false) {
-              (navigation as { navigate: (s: string) => void }).navigate('Login');
-              return;
-            }
             if (!activeSet) {
               showAlert('Please wait', 'Strategy Sets are loading. Try again in a moment.');
               return;
             }
-            if (!canGenerate) {
-              setShowPaywall(true);
-              return;
-            }
             if (loading) return;
-            setLoading(true);
-            handleGenerate()
-              .finally(() => setLoading(false))
-              .catch((err) => {
-                showAlert('Error', err instanceof Error ? err.message : 'Could not generate picks. Try again.');
-              });
+            handleGenerate().catch((err) => {
+              showAlert('Error', err instanceof Error ? err.message : 'Could not generate picks. Try again.');
+            });
           }}
           activeOpacity={0.7}
         >
-          {isSignedIn === false ? (
-            <>
-              <Ionicons name="log-in-outline" size={20} color={COLORS.text} style={styles.btnIcon} />
-              <Text style={styles.generateBtnText}>Sign in to use Generate Picks</Text>
-            </>
-          ) : loading ? (
+          {loading ? (
             <ActivityIndicator size="small" color={COLORS.text} />
           ) : (
             <>
@@ -872,24 +1110,24 @@ export default function StrategyLabScreen() {
             </>
           )}
         </TouchableOpacity>
-        {isSignedIn !== false && !canGenerate && (
-          <Text style={styles.upgradeHint}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan for Strategy Lab.' : 'Start 1-month free trial to use Strategy Lab.'}</Text>
-        )}
         {(() => {
           const today = getTodayDateString();
           const todayPicks = picksByDate[today];
           return todayPicks && todayPicks.length > 0 ? (
           <View style={styles.results}>
-            <Text style={styles.resultsTitle}>Generated picks ({today})</Text>
+            <Text style={styles.resultsTitle}>
+              Generated picks ({today}){activeSet ? ` · ${activeSet.name}` : ''}
+            </Text>
             <View key={today} style={styles.dateGroup}>
               <View style={styles.dateGroupHeader}>
                 <Text style={styles.dateGroupTitle}>{today}</Text>
                 <TouchableOpacity
                   style={[styles.addToPickBookBtn, inBookDateKeys.has(`${selectedLottery}:${today}`) && styles.addToPickBookBtnDisabled]}
                   onPress={async () => {
+                    if (!activeSet) return;
                     if (inBookDateKeys.has(`${selectedLottery}:${today}`)) return;
                     try {
-                      const id = await addToPickBook(selectedLottery, today, todayPicks);
+                      const id = await addToPickBook(selectedLottery, today, todayPicks, activeSet.id, activeSet.name);
                       if (id) {
                         setInBookDateKeys((prev) => new Set(prev).add(`${selectedLottery}:${today}`));
                         showAlert('Added', `${today} picks added to Pick Book.`);
@@ -937,36 +1175,22 @@ export default function StrategyLabScreen() {
         <Text style={styles.cardDesc}>
           Enter winning numbers and your picks. AI suggests small weight adjustments (±5% max). Does not predict outcomes.
         </Text>
-        <TouchableOpacity
-          style={[styles.refineBtn, isSignedIn !== false && !proUnlocked && !devUnlockRefine && styles.refineBtnDisabled]}
-          onPress={() => {
-            if (isSignedIn === false) {
-              (navigation as { navigate: (s: string) => void }).navigate('Login');
-              return;
-            }
-            setShowRefineModal(true);
-          }}
-          disabled={isSignedIn !== false && !proUnlocked && !devUnlockRefine}
-        >
-          {isSignedIn === false ? (
-            <>
-              <Ionicons name="log-in-outline" size={20} color={COLORS.text} style={styles.btnIcon} />
-              <Text style={styles.refineBtnText}>Sign in to use Refine Strategy</Text>
-            </>
-          ) : (
-            <>
-              <Ionicons name="construct" size={20} color={COLORS.text} style={styles.btnIcon} />
-              <Text style={styles.refineBtnText}>Refine Strategy</Text>
-            </>
-          )}
+        <TouchableOpacity style={styles.refineBtn} onPress={() => setShowRefineModal(true)}>
+          <Ionicons name="construct" size={20} color={COLORS.text} style={styles.btnIcon} />
+          <Text style={styles.refineBtnText}>Refine Strategy</Text>
         </TouchableOpacity>
-        {isSignedIn !== false && !proUnlocked && !devUnlockRefine && (
-          <Text style={styles.upgradeHint}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan for AI refinement.' : 'Start 1-month free trial to use AI-assisted refinement.'}</Text>
-        )}
         {devUnlockRefine && (
           <Text style={[styles.upgradeHint, { color: COLORS.success }]}>Dev: Refine Strategy unlocked for web testing</Text>
         )}
       </View>
+
+      {showStrategyLabBanners && activeSet && (
+        <BannerAdPlaceholder
+          key={`ad-${activeSet.id}-after-refine`}
+          testId={`strategy-after-refine-${activeSet.id}`}
+          shouldShowBanner
+        />
+      )}
 
       <Modal visible={editingFeature !== null} transparent animationType="fade">
         <TouchableOpacity
@@ -1026,12 +1250,7 @@ export default function StrategyLabScreen() {
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => {
-            setShowRefineModal(false);
-            setRefineProposal(null);
-            setPastDrawsDropdownOpen(false);
-            setShowPickBookInRefine(false);
-          }}
+          onPress={closeRefineModal}
         >
           <View
             style={[styles.modalCard, styles.refineModalCard, { maxHeight: Dimensions.get('window').height * 0.9 }]}
@@ -1039,14 +1258,16 @@ export default function StrategyLabScreen() {
             onResponderTerminationRequest={() => true}
           >
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Refine Strategy</Text>
+              <View style={styles.refineModalTitleRow}>
+                <Text style={styles.modalTitle}>Refine Strategy</Text>
+                {activeSet ? (
+                  <Text style={styles.refineApplyTotalBadge} numberOfLines={1}>
+                    {refineApplyTotalForSet} applied
+                  </Text>
+                ) : null}
+              </View>
               <TouchableOpacity
-                onPress={() => {
-                  setShowRefineModal(false);
-                  setRefineProposal(null);
-                  setPastDrawsDropdownOpen(false);
-                  setShowPickBookInRefine(false);
-                }}
+                onPress={closeRefineModal}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <Ionicons name="close" size={24} color={COLORS.textMuted} />
@@ -1061,7 +1282,7 @@ export default function StrategyLabScreen() {
                 </TouchableOpacity>
                 <Text style={styles.refinePickBookTitle}>Select from Pick Book</Text>
                 <Text style={styles.refinePickBookSubtitle}>
-                  Choose a saved pick to fill Your picks. Only {LOTTERY_DEFS[selectedLottery]?.name ?? selectedLottery} records shown.
+                  Choose a saved pick to fill Your picks. Includes Strategy Lab saves and lines added from Check result (same lottery).
                 </Text>
                 {refinePickBookLoading ? (
                   <ActivityIndicator size="large" color={COLORS.gold} style={{ marginTop: 24 }} />
@@ -1069,7 +1290,7 @@ export default function StrategyLabScreen() {
                   <View style={styles.refinePickBookEmpty}>
                     <Ionicons name="book-outline" size={40} color={COLORS.textMuted} />
                     <Text style={styles.refinePickBookEmptyText}>No picks for this lottery</Text>
-                    <Text style={styles.refinePickBookEmptyHint}>Add picks from Generated picks → Add to Pick Book</Text>
+                    <Text style={styles.refinePickBookEmptyHint}>Add from Generated picks or from Check result (Done → book icon)</Text>
                   </View>
                 ) : (
                   <ScrollView style={styles.refinePickBookList} showsVerticalScrollIndicator={false}>
@@ -1103,6 +1324,9 @@ export default function StrategyLabScreen() {
                     })}
                   </ScrollView>
                 )}
+                <TouchableOpacity style={styles.refinePickBookCancel} onPress={() => setShowPickBookInRefine(false)}>
+                  <Text style={styles.refinePickBookCancelText}>Cancel</Text>
+                </TouchableOpacity>
               </View>
             ) : !refineProposal ? (
               <View style={styles.refineScrollWrap}>
@@ -1260,7 +1484,7 @@ export default function StrategyLabScreen() {
                     <TouchableOpacity style={styles.refineSubmitBtn} onPress={handleRefine}>
                       <Text style={styles.refineSubmitBtnText}>Compute refinement</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.cancelBtn} onPress={() => { setShowRefineModal(false); setPastDrawsDropdownOpen(false); setShowPickBookInRefine(false); }}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={closeRefineModal}>
                       <Text style={styles.cancelBtnText}>Cancel</Text>
                     </TouchableOpacity>
                   </>
@@ -1295,7 +1519,11 @@ export default function StrategyLabScreen() {
                 )}
               </View>
             ) : (
-              <ScrollView style={styles.proposalScroll} contentContainerStyle={styles.proposalScrollContent} showsVerticalScrollIndicator={true}>
+              <ScrollView
+                style={[styles.proposalScroll, { maxHeight: Dimensions.get('window').height * 0.7 }]}
+                contentContainerStyle={styles.proposalScrollContent}
+                showsVerticalScrollIndicator={true}
+              >
                 <Text style={styles.proposalSection}>Proposed changes (±5% max)</Text>
                 {refineProposal.deltas.map((d, i) => (
                   <View key={i} style={styles.deltaRow}>
@@ -1310,16 +1538,20 @@ export default function StrategyLabScreen() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.cancelBtn, { marginBottom: 24, paddingVertical: 12 }]}
-                  onPress={() => {
-                    setShowRefineModal(false);
-                    setRefineProposal(null);
-                    setPastDrawsDropdownOpen(false);
-                    setShowPickBookInRefine(false);
-                  }}
+                  onPress={closeRefineModal}
                 >
                   <Text style={styles.cancelBtnText}>Cancel</Text>
                 </TouchableOpacity>
               </ScrollView>
+            )}
+            {showStrategyLabBanners && activeSet && (
+              <View style={styles.refineModalBannerFooter}>
+                <BannerAdPlaceholder
+                  key={`ad-${activeSet.id}-refine-modal-footer`}
+                  testId={`strategy-refine-modal-footer-${activeSet.id}`}
+                  shouldShowBanner
+                />
+              </View>
             )}
           </View>
         </TouchableOpacity>
@@ -1414,27 +1646,24 @@ const styles = StyleSheet.create({
   titleIcon: { marginRight: 10 },
   title: { fontSize: 24, fontWeight: '700', color: COLORS.text, flex: 1 },
   headerBookBtn: { marginLeft: 'auto' },
-  usageBar: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.gold,
-  },
-  usageRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
-  usageText: { color: COLORS.text, fontSize: 14, fontWeight: '600', flex: 1 },
-  upgradeLink: { paddingVertical: 4 },
-  upgradeLinkText: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },
   card: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 18, marginBottom: 16 },
   cardTitle: { color: COLORS.text, fontSize: 18, fontWeight: '600', marginBottom: 8 },
   cardDesc: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 12 },
-  setRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  setRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    alignItems: 'center',
+    marginBottom: 8,
+    marginTop: 2,
+  },
   setChip: {
-    paddingVertical: 8,
+    minHeight: 44,
+    paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
     backgroundColor: COLORS.bgElevated,
+    justifyContent: 'center',
   },
   setChipActive: { backgroundColor: COLORS.primary },
   setChipText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
@@ -1448,10 +1677,41 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.gold,
   },
+  setChipUpgrade: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 44,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: 'transparent',
+    maxWidth: 300,
+  },
+  setChipUpgradeText: { color: COLORS.gold, fontSize: 12, fontWeight: '700', flex: 1 },
   tubeSection: { marginBottom: 20 },
   tubeCategory: { fontSize: 12, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase' },
   luckyBiasDisclaimer: { color: COLORS.textMuted, fontSize: 11, fontStyle: 'italic', marginBottom: 10 },
-  luckyNumbersWrap: { marginLeft: 16 },
+  personalBiasRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+    marginTop: 2,
+    minHeight: 118,
+  },
+  luckyBiasColumn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    minWidth: 72,
+  },
+  luckyBiasGroupTitle: { color: COLORS.textSecondary, fontSize: 10, marginBottom: 4, alignSelf: 'center' },
+  luckyRightColumn: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  luckyNumbersGroup: { alignSelf: 'stretch' },
+  birthdayGroup: { alignSelf: 'stretch' },
   luckyNumbersLabel: { color: COLORS.textSecondary, fontSize: 10, marginBottom: 4 },
   luckyNumbersRow: { flexDirection: 'row', gap: 6 },
   luckyNumberCell: {
@@ -1466,6 +1726,20 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     padding: 0,
+  },
+  birthdayCell: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: '#a78bfa',
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+    padding: 0,
+    alignSelf: 'flex-start',
   },
   tubeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   tubeWrap: { flexDirection: 'row', alignItems: 'flex-start', width: 64 },
@@ -1492,6 +1766,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   arrowBtnDisabled: { opacity: 0.4 },
+  lockBtn: {
+    marginLeft: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    backgroundColor: COLORS.bgElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  tubeValueLocked: { color: COLORS.textMuted },
+  tubeLabelLocked: { color: COLORS.textMuted },
   generateConfirmCard: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, marginHorizontal: 24 },
   generateConfirmTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
   generateConfirmText: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 16 },
@@ -1527,10 +1813,42 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   editModalConfirmText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
-  lotteryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
-  lotteryPill: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: COLORS.bgElevated },
-  lotteryPillActive: { backgroundColor: COLORS.primary },
-  lotteryPillText: { color: COLORS.text, fontSize: 12 },
+  lotteryDropdownWrap: { marginBottom: 16, zIndex: 2 },
+  lotteryDropdownTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    gap: 10,
+  },
+  lotteryDropdownTriggerText: { color: COLORS.text, fontSize: 15, fontWeight: '600', flex: 1 },
+  lotteryDropdownMenu: {
+    marginTop: 6,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.bgCard,
+    overflow: 'hidden',
+  },
+  lotteryDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgCard,
+  },
+  lotteryDropdownItemLast: { borderBottomWidth: 0 },
+  lotteryDropdownItemActive: { backgroundColor: 'rgba(79, 70, 229, 0.18)' },
+  lotteryDropdownItemText: { color: COLORS.textSecondary, fontSize: 14, fontWeight: '500', flex: 1 },
+  lotteryDropdownItemTextActive: { color: COLORS.text, fontWeight: '600' },
   generateBtn: {
     backgroundColor: COLORS.primary,
     padding: 16,
@@ -1603,7 +1921,17 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalCard: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, width: '100%', maxWidth: 360, maxHeight: '85%', overflow: 'hidden' },
   refineModalCard: { maxHeight: '90%', flex: 1, flexDirection: 'column' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  refineModalBannerFooter: {
+    paddingTop: 12,
+    marginTop: 4,
+    width: '100%',
+    alignSelf: 'stretch',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.bgElevated,
+  },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 8 },
+  refineModalTitleRow: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginRight: 4, gap: 8 },
+  refineApplyTotalBadge: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted },
   modalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text },
   modalDisclaimer: { color: COLORS.textMuted, fontSize: 11, marginBottom: 16, fontStyle: 'italic' },
   inputLabel: { color: COLORS.textSecondary, fontSize: 12, marginTop: 12, marginBottom: 4 },
@@ -1722,6 +2050,37 @@ const styles = StyleSheet.create({
   refinePickBookEmpty: { alignItems: 'center', paddingVertical: 32 },
   refinePickBookEmptyText: { color: COLORS.textMuted, fontSize: 14, marginTop: 12 },
   refinePickBookEmptyHint: { color: COLORS.textMuted, fontSize: 12, marginTop: 8, textAlign: 'center' },
+  refinePickBookCancel: { marginTop: 8, paddingVertical: 14, alignItems: 'center' },
+  refinePickBookCancelText: { color: COLORS.textSecondary, fontSize: 16, fontWeight: '600' },
+  strategyGateCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 16,
+    padding: 20,
+    marginHorizontal: 24,
+    maxWidth: 400,
+    width: '100%',
+  },
+  strategyGateTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 10 },
+  strategyGateMsg: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 22, marginBottom: 16 },
+  strategyGatePrimary: {
+    backgroundColor: COLORS.gold,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  strategyGatePrimaryText: { color: COLORS.bg, fontSize: 16, fontWeight: '700' },
+  strategyGateSecondary: {
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  strategyGateSecondaryText: { color: COLORS.gold, fontSize: 15, fontWeight: '600' },
+  strategyGateCancel: { paddingVertical: 10, alignItems: 'center' },
+  strategyGateCancelText: { color: COLORS.textMuted, fontSize: 15 },
   refinePickBookList: { maxHeight: 280 },
   refinePickBookItem: {
     backgroundColor: COLORS.bgElevated,
@@ -1742,8 +2101,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   refineSubmitBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
-  proposalScroll: { maxHeight: 320 },
-  proposalScrollContent: { paddingBottom: 80 },
+  proposalScroll: { flexGrow: 1 },
+  proposalScrollContent: { paddingBottom: 24, flexGrow: 1 },
   proposalSection: { color: COLORS.gold, fontSize: 12, fontWeight: '600', marginTop: 12, marginBottom: 8 },
   deltaRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   deltaParam: { color: COLORS.text, fontSize: 14 },

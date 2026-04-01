@@ -27,6 +27,7 @@ import { generateRemainingNumbers } from '../utils/localAnalysis';
 import { DEFAULT_GENERATE_PARAMS, type GenerateParams } from '../types/generateParams';
 import type { CompassPayload, NumberTrendScore, PositionTopK, ShapeStats } from '../compass/types';
 import type { LotteryId } from '../types/lottery';
+import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
 
 const COMPASS_LOTTERIES: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
 
@@ -293,6 +294,7 @@ export default function CompassScreen() {
               setSearchNum={setSearchNum}
               maxRange={maxRange}
               onAddNumber={addToPicks}
+              userPlan={plan}
             />
           )}
           {tab === 'positions' && (
@@ -302,9 +304,10 @@ export default function CompassScreen() {
               setSelectedPos={setSelectedPos}
               picksPerDraw={picksPerDraw}
               onAddNumber={addToPicks}
+              userPlan={plan}
             />
           )}
-          {tab === 'shape' && <ShapeTab payload={payload} />}
+          {tab === 'shape' && <ShapeTab payload={payload} userPlan={plan} />}
         </>
       )}
     </ScrollView>
@@ -507,7 +510,8 @@ function PickSlots({
   const existingPicks = picks.filter((x) => x > 0);
   const minPick = existingPicks.length > 0 ? Math.min(...existingPicks) : 0;
   const lockFirstTooHigh = lockFirstNumber && hasFirstPick && minPick > maxFirstForLock;
-  const isAdFree = userPlan === 'pirate' || userPlan === 'pirate_astronaut';
+  const isAdFree =
+    userPlan === 'pirate' || userPlan === 'pirate_astronaut' || userPlan === 'astronaut';
   const canGenerate = !lockFirstTooHigh;
 
   const commitEdit = useCallback(
@@ -655,12 +659,14 @@ function TrendsTab({
   setSearchNum,
   maxRange,
   onAddNumber,
+  userPlan,
 }: {
   payload: CompassPayload;
   searchNum: string;
   setSearchNum: (s: string) => void;
   maxRange: number;
   onAddNumber?: (n: number) => void;
+  userPlan: UserPlan;
 }) {
   const filtered = payload.trendScores
     .filter((t) => {
@@ -686,6 +692,7 @@ function TrendsTab({
         ))}
       </ScrollView>
       {filtered.length > 50 && <Text style={styles.moreHint}>Showing first 50. Use search for specific.</Text>}
+      <BannerAdPlaceholder testId="compass-trends" userPlan={userPlan} />
     </View>
   );
 }
@@ -717,12 +724,14 @@ function PositionsTab({
   setSelectedPos,
   picksPerDraw,
   onAddNumber,
+  userPlan,
 }: {
   payload: CompassPayload;
   selectedPos: number;
   setSelectedPos: (n: number) => void;
   picksPerDraw: number;
   onAddNumber?: (n: number) => void;
+  userPlan: UserPlan;
 }) {
   const posData = payload.positionTopK.find((p) => p.position === selectedPos);
   return (
@@ -759,11 +768,12 @@ function PositionsTab({
           </View>
         </View>
       )}
+      <BannerAdPlaceholder testId="compass-positions" userPlan={userPlan} />
     </View>
   );
 }
 
-function ShapeTab({ payload }: { payload: CompassPayload }) {
+function ShapeTab({ payload, userPlan }: { payload: CompassPayload; userPlan: UserPlan }) {
   const s = payload.shapeStats;
   return (
     <View style={styles.tabContent}>
@@ -786,6 +796,7 @@ function ShapeTab({ payload }: { payload: CompassPayload }) {
         <Text style={styles.shapeLabel}>Max gap (typical)</Text>
         <Text style={styles.shapeValue}>{s.gaps.min} - {s.gaps.max}</Text>
       </View>
+      <BannerAdPlaceholder testId="compass-shape" userPlan={userPlan} />
     </View>
   );
 }
