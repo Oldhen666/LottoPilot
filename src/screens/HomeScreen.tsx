@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,9 +26,19 @@ interface Props {
   onLotteryChange: (id: LotteryId) => void;
   onCheckTicket: () => void;
   onViewDrawHistory: () => void;
+  /** First-run Check tab coach marks (steps 0–1 only) */
+  checkTourStep?: 0 | 1;
+  onCheckTourHighlight?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 }
 
-export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTicket, onViewDrawHistory }: Props) {
+export default function HomeScreen({
+  selectedLottery,
+  onLotteryChange,
+  onCheckTicket,
+  onViewDrawHistory,
+  checkTourStep,
+  onCheckTourHighlight,
+}: Props) {
   const insets = useSafeAreaInsets();
   const { plan } = useEntitlements();
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -42,6 +52,33 @@ export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTi
     setRefetchTrigger((n) => n + 1);
   }, [selectedLottery]);
   const def = LOTTERY_DEFS[selectedLottery];
+  const lotteryCoachRef = useRef<View>(null);
+  const checkBtnCoachRef = useRef<View>(null);
+
+  const reportCoachRect = useCallback(
+    (ref: React.RefObject<View | null>) => {
+      requestAnimationFrame(() => {
+        ref.current?.measureInWindow((x, y, w, h) => {
+          onCheckTourHighlight?.({ x, y, width: w, height: h });
+        });
+      });
+    },
+    [onCheckTourHighlight],
+  );
+
+  useEffect(() => {
+    if (checkTourStep === undefined) return;
+    const t = setTimeout(() => {
+      if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
+      else if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
+    }, 180);
+    return () => clearTimeout(t);
+  }, [checkTourStep, selectedLottery, reportCoachRect]);
+
+  const onCoachScrollSync = useCallback(() => {
+    if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
+    else if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
+  }, [checkTourStep, reportCoachRect]);
 
   const [refreshing, setRefreshing] = useState(false);
   const onPullRefresh = useCallback(() => {
@@ -57,6 +94,8 @@ export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTi
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={COLORS.primary} />}
+      onScrollEndDrag={onCoachScrollSync}
+      onMomentumScrollEnd={onCoachScrollSync}
     >
       <View style={styles.headerRow}>
         <Ionicons name="ticket" size={28} color={COLORS.gold} style={styles.logoIcon} />
@@ -66,7 +105,14 @@ export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTi
         </View>
       </View>
 
-      <View style={styles.dropdownWrap}>
+      <View
+        style={styles.dropdownWrap}
+        ref={lotteryCoachRef}
+        collapsable={false}
+        onLayout={() => {
+          if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
+        }}
+      >
         <Text style={styles.label}>Lottery</Text>
         <TouchableOpacity
           style={styles.dropdown}
@@ -139,10 +185,18 @@ export default function HomeScreen({ selectedLottery, onLotteryChange, onCheckTi
         )}
       </View>
 
-      <TouchableOpacity style={styles.primaryBtn} onPress={onCheckTicket}>
-        <Ionicons name="scan" size={20} color={COLORS.text} style={styles.btnIcon} />
-        <Text style={styles.primaryBtnText}>Check My Ticket</Text>
-      </TouchableOpacity>
+      <View
+        ref={checkBtnCoachRef}
+        collapsable={false}
+        onLayout={() => {
+          if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
+        }}
+      >
+        <TouchableOpacity style={styles.primaryBtn} onPress={onCheckTicket}>
+          <Ionicons name="scan" size={20} color={COLORS.text} style={styles.btnIcon} />
+          <Text style={styles.primaryBtnText}>Check My Ticket</Text>
+        </TouchableOpacity>
+      </View>
 
       <TouchableOpacity
         style={styles.secondaryBtn}

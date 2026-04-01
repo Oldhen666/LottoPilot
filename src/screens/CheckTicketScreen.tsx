@@ -50,6 +50,9 @@ interface Props {
   initialRecordId?: string | null;
   onBack: () => void;
   onResult: (recordId: string) => void;
+  /** First-run coach mark: highlight scan / upload row */
+  checkTourStep?: 2;
+  onCheckTourHighlight?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 }
 
 function parseNumbers(str: string, max: number, minVal?: number, maxVal?: number): number[] {
@@ -75,6 +78,8 @@ export default function CheckTicketScreen({
   initialRecordId,
   onBack,
   onResult,
+  checkTourStep,
+  onCheckTourHighlight,
 }: Props) {
   const { plan } = useEntitlements();
   const [lotteryId, setLotteryId] = useState<LotteryId>(preselectedLottery);
@@ -106,7 +111,18 @@ export default function CheckTicketScreen({
       ? rawDrawsList.filter((d) => isValidDrawDate(d.draw_date, 'mega_millions'))
       : rawDrawsList;
   const drawScrollRef = useRef<ScrollView>(null);
+  const scanCoachRef = useRef<View>(null);
   const CHIP_WIDTH = 105;
+
+  useEffect(() => {
+    if (checkTourStep !== 2 || !onCheckTourHighlight) return;
+    const t = setTimeout(() => {
+      scanCoachRef.current?.measureInWindow((x, y, w, h) => {
+        onCheckTourHighlight({ x, y, width: w, height: h });
+      });
+    }, 280);
+    return () => clearTimeout(t);
+  }, [checkTourStep, onCheckTourHighlight, lotteryId]);
 
   useEffect(() => {
     setLotteryId(preselectedLottery);
@@ -754,7 +770,20 @@ export default function CheckTicketScreen({
       )}
 
       <Text style={styles.label}>How to enter numbers</Text>
-      <View style={styles.entryRow}>
+      <View
+        ref={scanCoachRef}
+        collapsable={false}
+        style={styles.entryRow}
+        onLayout={() => {
+          if (checkTourStep === 2 && onCheckTourHighlight) {
+            requestAnimationFrame(() => {
+              scanCoachRef.current?.measureInWindow((x, y, w, h) => {
+                onCheckTourHighlight({ x, y, width: w, height: h });
+              });
+            });
+          }
+        }}
+      >
         {Platform.OS !== 'web' ? (
           <TouchableOpacity style={styles.entryBtn} onPress={() => scanDocument()}>
             <Ionicons name="scan" size={22} color={COLORS.gold} style={styles.entryBtnIcon} />

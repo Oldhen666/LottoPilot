@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AppState } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
 import { setSessionFromAuthUrl } from './src/services/supabase';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Text, StatusBar, Platform } from 'react-native';
+import { Text, StatusBar, Platform, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -35,6 +35,12 @@ import { getRecordById } from './src/db/sqlite';
 import type { CheckRecord } from './src/db/sqlite';
 
 import type { LotteryId } from './src/types/lottery';
+import CheckTourOverlay, { type CheckTourStepIndex } from './src/components/CheckTourOverlay';
+import {
+  getCheckTourCompleted,
+  setCheckTourCompleted,
+  canStartCheckTour,
+} from './src/services/checkTourStorage';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -62,30 +68,95 @@ function TabHome() {
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
   const [editRecordId, setEditRecordId] = useState<string | null>(null);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');
-  const { jurisdiction, jurisdictionCode } = useJurisdiction();
+  const { jurisdiction, jurisdictionCode, loading: jurisdictionLoading } = useJurisdiction();
+  const [checkTourStep, setCheckTourStep] = useState<CheckTourStepIndex | null>(null);
+  const [checkTourLoaded, setCheckTourLoaded] = useState(false);
+  const [checkTourDonePersisted, setCheckTourDonePersisted] = useState(false);
+  const [checkTourHighlightRect, setCheckTourHighlightRect] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
 
+  useEffect(() => {
+    getCheckTourCompleted().then((done) => {
+      setCheckTourDonePersisted(done);
+      setCheckTourLoaded(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!checkTourLoaded || checkTourDonePersisted || screen !== 'home' || jurisdictionLoading) return;
+    if (checkTourStep !== null) return;
+    let cancelled = false;
+    (async () => {
+      const ok = await canStartCheckTour();
+      if (cancelled || !ok) return;
+      setCheckTourStep(0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [checkTourLoaded, checkTourDonePersisted, screen, jurisdictionLoading, checkTourStep]);
+
+  const finishCheckTour = useCallback(async () => {
+    await setCheckTourCompleted();
+    setCheckTourDonePersisted(true);
+    setCheckTourStep(null);
+    setCheckTourHighlightRect(null);
+  }, []);
+
+  const handleLotteryChange = useCallback(
+    (id: LotteryId) => {
+      setSelectedLottery(id);
+      if (checkTourStep === 0) setCheckTourStep(1);
+    },
+    [checkTourStep],
+  );
+
+  const handleCheckTicket = useCallback(() => {
+    setScreen('check');
+    if (checkTourStep === 1) setCheckTourStep(2);
+  }, [checkTourStep]);
+
+  const checkTourNextFromStep0 = useCallback(() => {
+    setCheckTourStep(1);
+  }, []);
+
+  const showCheckTourOverlay =
+    checkTourStep !== null && (screen === 'home' || screen === 'check');
+
+  useEffect(() => {
+    if (checkTourStep === 2 && screen === 'check') {
+      setCheckTourHighlightRect(null);
+    }
+  }, [checkTourStep, screen]);
+
+  let main: React.ReactNode;
   if (screen === 'check') {
-    return (
+    main = (
       <CheckTicketScreen
         preselectedLottery={selectedLottery}
         jurisdiction={jurisdiction}
         jurisdictionCode={jurisdictionCode}
         initialRecordId={editRecordId}
+        checkTourStep={checkTourStep === 2 ? 2 : undefined}
+        onCheckTourHighlight={setCheckTourHighlightRect}
         onBack={() => {
           setEditRecordId(null);
           setScreen('home');
         }}
         onResult={(id) => {
+          if (checkTourStep === 2) void finishCheckTour();
           setResultRecordId(id);
           setEditRecordId(null);
           setScreen('result');
         }}
       />
     );
-  }
-
-  if (screen === 'result' && resultRecordId) {
-    return (
+  } else if (screen === 'result' && resultRecordId) {
+    main = (
       <ResultScreenAsync
         recordId={resultRecordId}
         onDone={() => {
@@ -99,24 +170,34 @@ function TabHome() {
         }}
       />
     );
-  }
-
-  if (screen === 'draws') {
-    return (
-      <DrawsListScreen
-        lotteryId={selectedLottery}
-        onBack={() => setScreen('home')}
+  } else if (screen === 'draws') {
+    main = <DrawsListScreen lotteryId={selectedLottery} onBack={() => setScreen('home')} />;
+  } else {
+    main = (
+      <HomeScreen
+        selectedLottery={selectedLottery}
+        onLotteryChange={handleLotteryChange}
+        onCheckTicket={handleCheckTicket}
+        onViewDrawHistory={() => setScreen('draws')}
+        checkTourStep={checkTourStep === 0 || checkTourStep === 1 ? checkTourStep : undefined}
+        onCheckTourHighlight={setCheckTourHighlightRect}
       />
     );
   }
 
   return (
-    <HomeScreen
-      selectedLottery={selectedLottery}
-      onLotteryChange={setSelectedLottery}
-      onCheckTicket={() => setScreen('check')}
-      onViewDrawHistory={() => setScreen('draws')}
-    />
+    <View style={{ flex: 1 }}>
+      {main}
+      {showCheckTourOverlay ? (
+        <CheckTourOverlay
+          step={checkTourStep!}
+          highlightRect={checkTourHighlightRect}
+          onSkip={finishCheckTour}
+          onNext={checkTourStep === 0 ? checkTourNextFromStep0 : undefined}
+          onDone={checkTourStep === 2 ? finishCheckTour : undefined}
+        />
+      ) : null}
+    </View>
   );
 }
 
