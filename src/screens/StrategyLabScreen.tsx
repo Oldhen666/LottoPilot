@@ -935,7 +935,8 @@ export default function StrategyLabScreen() {
           <View style={styles.tubeSection}>
             <Text style={[styles.tubeCategory, { color: '#a78bfa' }]}>Personal Bias</Text>
             <Text style={styles.luckyBiasDisclaimer}>{LUCKY_BIAS_DISCLAIMER}</Text>
-            <View style={styles.personalBiasRow}>
+            <View style={styles.personalBiasCenterWrap}>
+              <View style={styles.personalBiasRow}>
               <View style={styles.luckyBiasColumn}>
                 <Text style={styles.luckyBiasGroupTitle}>Lucky Bias</Text>
                 <View style={styles.tubeAndArrowRow}>
@@ -1036,6 +1037,7 @@ export default function StrategyLabScreen() {
                     maxLength={2}
                   />
                 </View>
+              </View>
               </View>
             </View>
           </View>
@@ -1619,9 +1621,11 @@ export default function StrategyLabScreen() {
       >
         <Pressable style={styles.modalOverlay} onPress={() => setShowPaywall(false)}>
           <View style={[styles.paywallCard, { alignSelf: 'center' }]}>
-            <Text style={styles.paywallTitle}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start 1-month free trial'}</Text>
+            <Text style={styles.paywallTitle}>
+              {hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start your 1-month free trial'}
+            </Text>
             <Text style={styles.paywallDesc}>
-              {hadAstronautSubscription ? `Full Strategy Lab + Compass. ${astronautPrice}.` : `Full Strategy Lab + Compass access. After trial, ${astronautPrice}.`}
+              {`Full Strategy Lab + Compass access\nAd-free experience\nSmarter AI predictions (continuously improving)\nNew features and parameter updates added regularly\n- with ONLY ${astronautPrice}`}
             </Text>
             <Pressable
               style={({ pressed }) => [styles.purchaseBtn, pressed && { opacity: 0.8 }]}
@@ -1692,23 +1696,28 @@ const styles = StyleSheet.create({
   tubeSection: { marginBottom: 20 },
   tubeCategory: { fontSize: 12, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase' },
   luckyBiasDisclaimer: { color: COLORS.textMuted, fontSize: 11, fontStyle: 'italic', marginBottom: 10 },
+  /** Centers Lucky Bias + inputs as a block (avoids flex:1 columns hugging left/right edges). */
+  personalBiasCenterWrap: { width: '100%', alignItems: 'center' },
   personalBiasRow: {
     flexDirection: 'row',
     alignItems: 'stretch',
-    gap: 12,
+    alignSelf: 'center',
+    gap: 16,
     marginTop: 2,
     minHeight: 118,
+    maxWidth: '100%',
   },
   luckyBiasColumn: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'flex-start',
-    minWidth: 72,
+    width: 72,
+    flexShrink: 0,
   },
   luckyBiasGroupTitle: { color: COLORS.textSecondary, fontSize: 10, marginBottom: 4, alignSelf: 'center' },
   luckyRightColumn: {
-    flex: 1,
     justifyContent: 'space-between',
+    minWidth: 124,
+    flexShrink: 0,
   },
   luckyNumbersGroup: { alignSelf: 'stretch' },
   birthdayGroup: { alignSelf: 'stretch' },
