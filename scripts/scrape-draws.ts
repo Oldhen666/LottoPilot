@@ -640,8 +640,9 @@ async function main() {
     process.exit(1);
   }
 
-  const pbLimit = FETCH_HISTORY ? 500 : 1;
-  const mmLimit = FETCH_HISTORY ? 500 : 1;
+  /** Default: fetch several recent draws so DB can catch up; NY API may lag 1–2 draws behind lottery.org. */
+  const pbLimit = FETCH_HISTORY ? 500 : 20;
+  const mmLimit = FETCH_HISTORY ? 500 : 20;
 
   // Canadian: WCLC (FETCH_HISTORY=1 uses PDF since-inception; else recent HTML)
   for (const { id, fn } of [

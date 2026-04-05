@@ -4,6 +4,8 @@
  */
 
 import { Platform } from 'react-native';
+import type { LotteryId } from '../types/lottery';
+import { preprocessTicketImageForOcr } from './ticketPreprocess/preprocessTicketImage';
 
 /** Add-on data detected from OCR (auto-check when present) */
 export interface ParsedAddOns {
@@ -14,6 +16,8 @@ export interface ParsedAddOns {
 export interface ParsedTicket {
   mainNumbers: number[];
   specialNumbers?: number[];
+  /** Powerball / Mega Millions: one special ball per play line (aligned with allSets). */
+  specialsPerLine?: number[];
   /** Multiple sets (e.g. Lotto Max has 3 lines) */
   allSets?: number[][];
   drawDate?: string; // YYYY-MM-DD if detected
@@ -199,6 +203,176 @@ function cleanTicketText(text: string): string {
     .trim();
 }
 
+/**
+ * One play row: first mainCount unique numbers in [1, mainMax] (order of appearance), then
+ * Power/Mega ball = last number in line that lies in special range; if that equals a main, scan backward for another in range.
+ */
+function parseUsPbMmLine(
+  line: string,
+  mainCount: number,
+  mainMax: number,
+  specialMin: number,
+  specialMax: number,
+): { main: number[]; special: number | null } {
+  const raw = line.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
+  const mains: number[] = [];
+  const used = new Set<number>();
+  for (const n of raw) {
+    if (mains.length < mainCount && n >= 1 && n <= mainMax && !used.has(n)) {
+      mains.push(n);
+      used.add(n);
+    }
+  }
+  if (mains.length < mainCount) {
+    return { main: mains.sort((a, b) => a - b), special: null };
+  }
+  let special: number | null = null;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const n = raw[i];
+    if (n < specialMin || n > specialMax) continue;
+    if (!mains.includes(n)) {
+      special = n;
+      break;
+    }
+  }
+  if (special == null) {
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const n = raw[i];
+      if (n >= specialMin && n <= specialMax) {
+        special = n;
+        break;
+      }
+    }
+  }
+  return { main: mains.sort((a, b) => a - b), special };
+}
+
+function extractUsPbMmFromBlocks(
+  blocks: Array<{ text: string; lines?: Array<{ text: string }> }>,
+  mainCount: number,
+  mainMax: number,
+  specialMin: number,
+  specialMax: number,
+  maxPlays: number,
+): { allSets: number[][]; specialsPerLine: number[] } {
+  const allSets: number[][] = [];
+  const specialsPerLine: number[] = [];
+  outer: for (const block of blocks) {
+    const lineTexts: string[] = [];
+    if (block.lines?.length) {
+      for (const line of block.lines) lineTexts.push(line.text);
+    } else if (block.text?.trim()) {
+      lineTexts.push(block.text);
+    }
+    for (const rawLine of lineTexts) {
+      const t = rawLine.replace(/\s+/g, ' ').trim();
+      if (t.length < 3) continue;
+      const { main, special } = parseUsPbMmLine(t, mainCount, mainMax, specialMin, specialMax);
+      if (main.length >= mainCount) {
+        allSets.push(main.slice(0, mainCount));
+        specialsPerLine.push(special != null && special > 0 ? special : 0);
+        if (allSets.length >= maxPlays) break outer;
+      }
+    }
+  }
+  return { allSets, specialsPerLine };
+}
+
+/** ML Kit often merges rows — split full OCR text by newlines and parse each row. */
+function extractUsPbMmFromLinesText(
+  fullText: string,
+  mainCount: number,
+  mainMax: number,
+  specialMin: number,
+  specialMax: number,
+  maxPlays: number,
+): { allSets: number[][]; specialsPerLine: number[] } {
+  const allSets: number[][] = [];
+  const specialsPerLine: number[] = [];
+  const lines = fullText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l.length >= 3);
+  for (const line of lines) {
+    if (allSets.length >= maxPlays) break;
+    const { main, special } = parseUsPbMmLine(line, mainCount, mainMax, specialMin, specialMax);
+    if (main.length >= mainCount) {
+      allSets.push(main.slice(0, mainCount));
+      specialsPerLine.push(special != null && special > 0 ? special : 0);
+    }
+  }
+  return { allSets, specialsPerLine };
+}
+
+/**
+ * Flat digit stream: repeated groups of (mainCount mains, then first following number in special range).
+ * Used when blocks/lines collapse into one blob.
+ */
+function extractUsPbMmFromDigitStream(
+  fullText: string,
+  mainCount: number,
+  mainMax: number,
+  specialMin: number,
+  specialMax: number,
+  maxPlays: number,
+): { allSets: number[][]; specialsPerLine: number[] } {
+  const allDigits = fullText.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
+  const allSets: number[][] = [];
+  const specialsPerLine: number[] = [];
+  let i = 0;
+  while (allSets.length < maxPlays && i < allDigits.length) {
+    const mains: number[] = [];
+    const used = new Set<number>();
+    while (i < allDigits.length && mains.length < mainCount) {
+      const n = allDigits[i];
+      if (n >= 1 && n <= mainMax && !used.has(n)) {
+        mains.push(n);
+        used.add(n);
+      }
+      i++;
+    }
+    if (mains.length < mainCount) break;
+    let special = 0;
+    while (i < allDigits.length) {
+      const n = allDigits[i];
+      if (n >= specialMin && n <= specialMax) {
+        special = n;
+        i++;
+        break;
+      }
+      i++;
+    }
+    allSets.push(mains.sort((a, b) => a - b));
+    specialsPerLine.push(special);
+  }
+  return { allSets, specialsPerLine };
+}
+
+function pickBestUsPbMm(
+  text: string,
+  blocks: Array<{ text: string; lines?: Array<{ text: string }> }> | undefined,
+  mainCount: number,
+  mainMax: number,
+  specialMin: number,
+  specialMax: number,
+  maxPlays: number,
+): { allSets: number[][]; specialsPerLine: number[] } | null {
+  type Cand = { allSets: number[][]; specialsPerLine: number[]; w: number };
+  const cands: Cand[] = [];
+  if (blocks?.length) {
+    const b = extractUsPbMmFromBlocks(blocks, mainCount, mainMax, specialMin, specialMax, maxPlays);
+    if (b.allSets.length) cands.push({ ...b, w: b.allSets.length * 100 + 3 });
+  }
+  const ln = extractUsPbMmFromLinesText(text, mainCount, mainMax, specialMin, specialMax, maxPlays);
+  if (ln.allSets.length) cands.push({ ...ln, w: ln.allSets.length * 100 + 2 });
+  const st = extractUsPbMmFromDigitStream(text, mainCount, mainMax, specialMin, specialMax, maxPlays);
+  if (st.allSets.length) cands.push({ ...st, w: st.allSets.length * 100 + 1 });
+  if (cands.length === 0) return null;
+  cands.sort((a, b) => b.w - a.w || b.allSets.length - a.allSets.length);
+  const best = cands[0];
+  return { allSets: best.allSets, specialsPerLine: best.specialsPerLine };
+}
+
 function extractNumbers(
   text: string,
   mainCount: number,
@@ -237,9 +411,99 @@ function extractNumbers(
   return { main: main.sort((a, b) => a - b), special, allSets };
 }
 
+type MlKitResult = {
+  text: string;
+  blocks?: Array<{ text: string; lines?: Array<{ text: string }> }>;
+};
+
+function parseMlKitResultToTicket(
+  result: MlKitResult,
+  options: {
+    mainCount: number;
+    mainMax: number;
+    specialMin?: number;
+    specialMax: number;
+    specialCount: number;
+    lotteryId?: string;
+    jurisdictionCode?: string;
+    playsPerTicket?: number;
+  },
+): ParsedTicket | null {
+  const text = result?.text ?? '';
+  const blocks = result?.blocks;
+  if (!text.trim()) return null;
+
+  const { mainCount, mainMax, specialMax, specialCount } = options;
+  const smin = options.specialMin ?? 1;
+  const plays = options.playsPerTicket ?? 5;
+
+  let addOnsDetected: ParsedAddOns | undefined;
+  if (options.lotteryId && options.jurisdictionCode) {
+    addOnsDetected = extractAddOnsFromText(text, options.lotteryId, options.jurisdictionCode);
+  }
+  const drawDate = parseDateFromText(text);
+
+  if (options.lotteryId === 'powerball' || options.lotteryId === 'mega_millions') {
+    const picked = pickBestUsPbMm(text, blocks, mainCount, mainMax, smin, specialMax, plays);
+    if (picked && picked.allSets.length > 0) {
+      const { allSets: usSets, specialsPerLine } = picked;
+      const spl = specialsPerLine.slice(0, usSets.length);
+      return {
+        mainNumbers: usSets[0],
+        allSets: usSets,
+        specialsPerLine: spl,
+        drawDate,
+        confidence: usSets[0].length >= mainCount ? 0.9 : 0.5,
+        rawText: text,
+        addOnsDetected,
+      };
+    }
+  }
+
+  const { main, special, allSets } = extractNumbers(text, mainCount, mainMax, specialMax, specialCount, blocks);
+  if (main.length === 0 && (!allSets || allSets.length === 0)) return null;
+  const useMain = allSets?.length ? allSets[0] : main;
+  const useSpecial = mainCount === 7 && mainMax === 49 ? undefined : special.length > 0 ? special : undefined;
+  return {
+    mainNumbers: useMain,
+    specialNumbers: useSpecial,
+    allSets: allSets?.length ? allSets : undefined,
+    drawDate,
+    confidence: useMain.length >= mainCount ? 0.9 : 0.5,
+    rawText: text,
+    addOnsDetected,
+  };
+}
+
+/** Heuristic score for picking best OCR among preprocessed variants (ML Kit has no per-line confidence). */
+export function scoreParsedTicket(
+  parsed: ParsedTicket | null,
+  mainCount: number,
+  mainMax: number,
+): number {
+  if (!parsed) return -1;
+  const sets = parsed.allSets?.length ? parsed.allSets : [parsed.mainNumbers];
+  let best = -1;
+  for (const set of sets) {
+    const valid = set.filter((n) => n >= 1 && n <= mainMax);
+    let s = valid.length * 6;
+    if (valid.length >= mainCount) s += 22;
+    if (valid.length === mainCount) s += 40;
+    s -= Math.abs(valid.length - mainCount) * 5;
+    if (parsed.drawDate) s += 5;
+    if (parsed.specialNumbers?.length) s += 5;
+    if (parsed.specialsPerLine?.some((n) => n > 0)) s += 8;
+    if (parsed.rawText && parsed.rawText.length > 40) s += 2;
+    best = Math.max(best, s);
+  }
+  return best;
+}
+
 /**
  * Parse ticket numbers and optional draw date from image URI.
  * Uses expo-mlkit-ocr (local, free). Returns null on web or if OCR fails.
+ * Runs lightweight preprocessing (CLAHE, background suppression, adaptive threshold + morphology),
+ * then OCR on grayscale / region-enhanced / binarized variants and keeps the best parse by heuristic score.
  * When lotteryId and jurisdictionCode are provided, also extracts add-on data (EXTRA, ENCORE, TAG, Power Play, Double Play).
  */
 export async function parseTicketFromImage(
@@ -247,45 +511,69 @@ export async function parseTicketFromImage(
   options?: {
     mainCount: number;
     mainMax: number;
+    specialMin?: number;
     specialMax: number;
     specialCount: number;
     lotteryId?: string;
     jurisdictionCode?: string;
+    playsPerTicket?: number;
   }
 ): Promise<ParsedTicket | null> {
   if (Platform.OS === 'web') return null;
+
+  const mainCount = options?.mainCount ?? 7;
+  const mainMax = options?.mainMax ?? 49;
+  const specialMax = options?.specialMax ?? 49;
+  const specialCount = options?.specialCount ?? 1;
+  const lotteryId = (options?.lotteryId as LotteryId) ?? 'powerball';
+
+  const parseOpts = {
+    mainCount,
+    mainMax,
+    specialMin: options?.specialMin,
+    specialMax,
+    specialCount,
+    lotteryId: options?.lotteryId,
+    jurisdictionCode: options?.jurisdictionCode,
+    playsPerTicket: options?.playsPerTicket,
+  };
+
+  const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
+
+  const runOne = async (uri: string) => {
+    const result = (await ExpoMlkitOcr.recognizeText(uri)) as MlKitResult;
+    return parseMlKitResultToTicket(result, parseOpts);
+  };
+
   try {
-    const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-    const result = await ExpoMlkitOcr.recognizeText(imageUri);
-    const text = result?.text ?? '';
-    const blocks = result?.blocks;
-    if (!text.trim()) return null;
-
-    const mainCount = options?.mainCount ?? 7;
-    const mainMax = options?.mainMax ?? 49;
-    const specialMax = options?.specialMax ?? 49;
-    const specialCount = options?.specialCount ?? 1;
-
-    const { main, special, allSets } = extractNumbers(text, mainCount, mainMax, specialMax, specialCount, blocks);
-    const drawDate = parseDateFromText(text);
-
-    let addOnsDetected: ParsedAddOns | undefined;
-    if (options?.lotteryId && options?.jurisdictionCode) {
-      addOnsDetected = extractAddOnsFromText(text, options.lotteryId, options.jurisdictionCode);
+    const pre = await preprocessTicketImageForOcr(imageUri, lotteryId);
+    try {
+      const results = await Promise.all(pre.variantUris.map((u) => ExpoMlkitOcr.recognizeText(u)));
+      let best: ParsedTicket | null = null;
+      let bestScore = -1;
+      for (let i = 0; i < results.length; i++) {
+        const parsed = parseMlKitResultToTicket(results[i] as MlKitResult, parseOpts);
+        const s = scoreParsedTicket(parsed, mainCount, mainMax);
+        if (s > bestScore) {
+          bestScore = s;
+          best = parsed;
+        }
+      }
+      if (best) {
+        const useMain = best.mainNumbers;
+        const confBoost = Math.min(0.95, 0.45 + bestScore * 0.008);
+        return { ...best, confidence: useMain.length >= mainCount ? confBoost : best.confidence };
+      }
+      return await runOne(imageUri);
+    } finally {
+      await pre.cleanup();
     }
+  } catch {
+    /* fall through to single-shot OCR */
+  }
 
-    if (main.length === 0 && (!allSets || allSets.length === 0)) return null;
-    const useMain = allSets?.length ? allSets[0] : main;
-    const useSpecial = mainCount === 7 && mainMax === 49 ? undefined : special.length > 0 ? special : undefined;
-    return {
-      mainNumbers: useMain,
-      specialNumbers: useSpecial,
-      allSets: allSets?.length ? allSets : undefined,
-      drawDate,
-      confidence: useMain.length >= mainCount ? 0.9 : 0.5,
-      rawText: text,
-      addOnsDetected,
-    };
+  try {
+    return await runOne(imageUri);
   } catch {
     return null;
   }

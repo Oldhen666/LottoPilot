@@ -38,7 +38,14 @@ function formatStatus(status: Status[]): string {
     if (s.latest_date && s.days_ago !== null) {
       const flag = s.stale ? ' ⚠️ 需更新' : ' ✓';
       const exp = s.expected_latest ? ` 应有≥${s.expected_latest}` : '';
-      lines.push(`  ${label}: 最新 ${s.latest_date} (${s.days_ago} 天前)${exp}${flag}`);
+      let addon = '';
+      if (s.extra_ok !== null || s.encore_ok !== null) {
+        const bits: string[] = [];
+        if (s.extra_ok !== null) bits.push(`EXTRA:${s.extra_ok ? '✓' : '缺'}`);
+        if (s.encore_ok !== null) bits.push(`ENCORE:${s.encore_ok ? '✓' : '缺'}`);
+        addon = ` · ${bits.join(' ')}`;
+      }
+      lines.push(`  ${label}: 最新 ${s.latest_date} (${s.days_ago} 天前)${exp}${flag}${addon}`);
     } else {
       lines.push(`  ${label}: 无数据 ⚠️`);
     }
@@ -57,10 +64,26 @@ async function runCheck(showAlways = true): Promise<Status[]> {
     console.log('---\n');
   }
 
-  if (anyStale && alarmOn) {
+  const addonMissing = status.filter(
+    (s) =>
+      (s.lottery_id === 'lotto_max' || s.lottery_id === 'lotto_649') &&
+      s.latest_date &&
+      (s.extra_ok === false || s.encore_ok === false),
+  );
+
+  if (alarmOn && (anyStale || addonMissing.length > 0)) {
     beep();
-    const staleNames = status.filter((s) => s.stale).map((s) => LOTTERY_LABELS[s.lottery_id] ?? s.lottery_id);
-    console.log(`\n🔔 提醒: ${staleNames.join(' / ')} 数据可能过期，建议运行更新 (输入 u)\n`);
+    if (anyStale) {
+      const staleNames = status.filter((s) => s.stale).map((s) => LOTTERY_LABELS[s.lottery_id] ?? s.lottery_id);
+      console.log(`\n🔔 提醒: ${staleNames.join(' / ')} 数据可能过期，建议运行更新 (输入 u)\n`);
+    }
+    if (addonMissing.length > 0) {
+      const names = addonMissing.map((s) => LOTTERY_LABELS[s.lottery_id] ?? s.lottery_id);
+      console.log(
+        `🔔 加奖号码: ${names.join(' / ')} 最新期缺少 EXTRA 或 ENCORE 官方号（draws.extra_number / encore_number）。` +
+          `「更新数据库」会运行 scrape 并尝试一并写入。\n`,
+      );
+    }
   }
 
   return status;

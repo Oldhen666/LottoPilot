@@ -67,7 +67,9 @@
 </head>
 <body>
   <h1>LottoPilot 数据监控</h1>
-  <p style="font-size:12px;color:#64748b;margin:0 0 12px;">自动检查：每日 0:00（本机时间）；开启「自动更新」时，届时会先抓取再刷新状态</p>
+  <p style="font-size:12px;color:#64748b;margin:0 0 12px;">自动检查：每日 0:00（本机时间）；开启「自动更新」时，届时会先抓取再刷新状态。</p>
+  <p style="font-size:11px;color:#94a3b8;margin:0 0 12px;line-height:1.45;">若通过<strong>桌面图标 / 双击</strong>打开，没有黑色命令行窗口，属正常。点「更新数据库」后，抓取过程会写入项目根目录下 <code style="font-size:10px;">logs/monitor-scrape-last.log</code>（与 <code style="font-size:10px;">package.json</code> 同级文件夹里的 <code style="font-size:10px;">logs</code>），出错时可打开该文件查看。</p>
+  <p style="font-size:11px;color:#94a3b8;margin:0 0 12px;line-height:1.45;"><strong>「更新完成」但仍显示需更新？</strong>说明库里<strong>最新开奖日仍早于</strong>上面推算的「应有」日期——常见原因：① 公开数据源（如 NY Open Data、WCLC）尚未公布该期；② 网络/地区抓取到的页面不是最新。可打开上述日志看是否出现 <code style="font-size:10px;">Upserted …</code> 及日期。美系彩种抓取已默认拉最近多期；若仍落后，多为源站数据延迟。</p>
   <div class="actions">
     <button class="btn-check" id="btnCheck" onclick="doCheck()">检查状态</button>
     <button class="btn-update" id="btnUpdate" onclick="doUpdate()">更新数据库</button>

@@ -14,6 +14,7 @@ import {
   Modal,
   Dimensions,
   RefreshControl,
+  InteractionManager,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,6 +46,8 @@ const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_m
 const HIDDEN_ADD_ON_CODES = new Set<string>(['POWER_PLAY', 'DOUBLE_PLAY', 'MEGA_MULTIPLIER']);
 interface Props {
   preselectedLottery?: LotteryId;
+  /** When user picks a lottery in the Check screen dropdown — persist for next visit / home default. */
+  onLotteryChange?: (id: LotteryId) => void;
   jurisdiction?: CurrentJurisdiction | null;
   jurisdictionCode?: string | null;
   initialRecordId?: string | null;
@@ -73,6 +76,7 @@ function parseNumbers(str: string, max: number, minVal?: number, maxVal?: number
 
 export default function CheckTicketScreen({
   preselectedLottery = 'lotto_max',
+  onLotteryChange,
   jurisdiction,
   jurisdictionCode,
   initialRecordId,
@@ -102,6 +106,8 @@ export default function CheckTicketScreen({
   const [showOcrLog, setShowOcrLog] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  /** Full-screen overlay while OCR / preprocessing runs on a ticket image. */
+  const [ocrReading, setOcrReading] = useState(false);
   const { draws, loading } = useDraws(lotteryId, refetchTrigger);
   const def = LOTTERY_DEFS[lotteryId];
   const rawDrawsList = [...draws, ...extraDraws.filter((e) => !draws.some((d) => d.draw_date === e.draw_date))];
@@ -111,18 +117,39 @@ export default function CheckTicketScreen({
       ? rawDrawsList.filter((d) => isValidDrawDate(d.draw_date, 'mega_millions'))
       : rawDrawsList;
   const drawScrollRef = useRef<ScrollView>(null);
+  const checkScrollRef = useRef<ScrollView>(null);
   const scanCoachRef = useRef<View>(null);
+  /** Y offset of the numbers section within ScrollView content (for post-OCR scroll). */
+  const numbersSectionYRef = useRef(0);
   const CHIP_WIDTH = 105;
 
-  useEffect(() => {
+  const scrollToNumbersSection = useCallback(() => {
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        const y = numbersSectionYRef.current;
+        if (y > 0) {
+          checkScrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+        }
+      }, 550);
+    });
+  }, []);
+
+  const reportScanCoachRect = useCallback(() => {
     if (checkTourStep !== 2 || !onCheckTourHighlight) return;
-    const t = setTimeout(() => {
-      scanCoachRef.current?.measureInWindow((x, y, w, h) => {
-        onCheckTourHighlight({ x, y, width: w, height: h });
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          scanCoachRef.current?.measureInWindow((x, y, w, h) => {
+            if (w > 0 && h > 0) onCheckTourHighlight({ x, y, width: w, height: h });
+          });
+        }, 120);
       });
-    }, 280);
-    return () => clearTimeout(t);
-  }, [checkTourStep, onCheckTourHighlight, lotteryId]);
+    });
+  }, [checkTourStep, onCheckTourHighlight]);
+
+  useEffect(() => {
+    reportScanCoachRect();
+  }, [reportScanCoachRect, lotteryId]);
 
   useEffect(() => {
     setLotteryId(preselectedLottery);
@@ -150,6 +177,23 @@ export default function CheckTicketScreen({
       setSpecialByLine([]);
     }
   }, [lotteryId, initialRecordId]);
+
+  /** Clear OCR-filled numbers and add-ons when user removes the preview image. */
+  const clearScannedReadings = useCallback(() => {
+    const d = LOTTERY_DEFS[lotteryId];
+    const cnt = d?.main_count ?? 7;
+    const plays = d?.plays_per_ticket ?? 1;
+    const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
+    setAllSets(emptySets);
+    setSpecialInput('');
+    if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+      setSpecialByLine(Array.from({ length: plays }, () => ''));
+    } else {
+      setSpecialByLine([]);
+    }
+    setAddOnsSelected({});
+    setAddOnsInputs({});
+  }, [lotteryId]);
 
   useEffect(() => {
     const jCode = jurisdictionCode ?? 'CA-ON';
@@ -386,7 +430,7 @@ export default function CheckTicketScreen({
         if (prizeResults[i]?.estimatedPrizeText) (lr as { prizeText?: string }).prizeText = prizeResults[i].estimatedPrizeText;
       });
 
-      const drawForAddOns = {
+      let drawForAddOns = {
         ...selectedDraw,
         extra_number: (selectedDraw as { extra_number?: string }).extra_number,
         encore_number: (selectedDraw as { encore_number?: string }).encore_number,
@@ -396,6 +440,21 @@ export default function CheckTicketScreen({
         maxmillions_numbers_json: (selectedDraw as { maxmillions_numbers_json?: string[] }).maxmillions_numbers_json,
         mega_multiplier: (selectedDraw as { mega_multiplier?: number }).mega_multiplier,
       };
+      // List + SQLite draws cache omit extra_number / encore_number — fetch full row for EXTRA / ENCORE / Maxmillions.
+      if (lotteryId === 'lotto_max' || lotteryId === 'lotto_649') {
+        const full = await fetchDrawByDate(lotteryId, selectedDraw.draw_date);
+        if (full) {
+          const f = full as Record<string, unknown>;
+          drawForAddOns = {
+            ...drawForAddOns,
+            extra_number: (f.extra_number as string | undefined) ?? drawForAddOns.extra_number,
+            encore_number: (f.encore_number as string | undefined) ?? drawForAddOns.encore_number,
+            maxmillions_numbers_json:
+              (f.maxmillions_numbers_json as string[] | undefined) ?? drawForAddOns.maxmillions_numbers_json,
+            tag_number: (f.tag_number as string | undefined) ?? drawForAddOns.tag_number,
+          };
+        }
+      }
       let tagNumber: string | null | undefined = drawForAddOns.tag_number;
       if (addOnsSelected?.TAG && addOnsInputs?.TAG) {
         const tagDrawDate = addOnsInputs.TAG_DRAW_DATE ?? selectedDraw.draw_date;
@@ -463,17 +522,21 @@ export default function CheckTicketScreen({
   };
 
   const processImageUri = async (uri: string) => {
-    setImageUri(uri);
+    setOcrReading(true);
+    try {
+      setImageUri(uri);
 
-    const def = LOTTERY_DEFS[lotteryId];
+      const def = LOTTERY_DEFS[lotteryId];
     const jCode = jurisdictionCode ?? 'CA-ON';
     const parsed = await parseTicketFromImage(uri, def ? {
       mainCount: def.main_count,
       mainMax: def.main_max,
+      specialMin: def.special_min ?? 1,
       specialMax: def.special_max ?? 49,
       specialCount: def.special_count ?? 1,
       lotteryId,
       jurisdictionCode: jCode,
+      playsPerTicket: def.plays_per_ticket,
     } : undefined);
     if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
       if (parsed.allSets?.length) {
@@ -481,17 +544,25 @@ export default function CheckTicketScreen({
       } else {
         setAllSets([parsed!.mainNumbers]);
       }
-      if (parsed.specialNumbers?.length) {
+      const plays = def?.plays_per_ticket ?? 1;
+      if (
+        parsed.specialsPerLine?.length &&
+        (lotteryId === 'powerball' || lotteryId === 'mega_millions')
+      ) {
+        const row = parsed.specialsPerLine.map((n) => (n > 0 ? String(n) : ''));
+        while (row.length < plays) row.push('');
+        setSpecialByLine(row.slice(0, plays));
+        setSpecialInput('');
+      } else if (parsed.specialNumbers?.length) {
         const spJoined = parsed.specialNumbers.join(' ');
         setSpecialInput(spJoined);
         if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
-          const plays = def?.plays_per_ticket ?? 1;
-          setSpecialByLine(Array.from({ length: plays }, () => spJoined));
+          const first = parsed.specialNumbers[0] != null ? String(parsed.specialNumbers[0]) : '';
+          setSpecialByLine(Array.from({ length: plays }, (_, li) => (li === 0 ? first : '')));
         }
       } else if (lotteryId === 'lotto_max' || lotteryId === 'lotto_649') {
         setSpecialInput('');
       } else if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
-        const plays = def?.plays_per_ticket ?? 1;
         setSpecialByLine(Array.from({ length: plays }, () => ''));
       }
       if (parsed.addOnsDetected) {
@@ -505,6 +576,18 @@ export default function CheckTicketScreen({
             newSelected[code as keyof AddOnsSelected] = true;
             const val = parsed.addOnsDetected!.inputs[code];
             if (val != null) newInputs[code as keyof AddOnsInputs] = val;
+          }
+        }
+        // Lotto Max / 649: WCLC EXTRA & OLG ENCORE are always merged when OCR finds them — catalog may be empty or omit rows offline.
+        if (lotteryId === 'lotto_max' || lotteryId === 'lotto_649') {
+          const det = parsed.addOnsDetected;
+          if (det.selected.EXTRA && det.inputs.EXTRA) {
+            newSelected.EXTRA = true;
+            newInputs.EXTRA = det.inputs.EXTRA;
+          }
+          if (det.selected.ENCORE && det.inputs.ENCORE) {
+            newSelected.ENCORE = true;
+            newInputs.ENCORE = det.inputs.ENCORE;
           }
         }
         if (Object.keys(newSelected).length > 0) {
@@ -579,6 +662,13 @@ export default function CheckTicketScreen({
       setOcrDateDetected(false);
       setDateStatusMsg(parsed ? 'No date detected from ticket. Please select draw date manually.' : 'OCR could not read text. Please enter numbers and select date manually.');
     }
+
+      if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
+        scrollToNumbersSection();
+      }
+    } finally {
+      setOcrReading(false);
+    }
   };
 
   const scanDocument = async () => {
@@ -651,6 +741,7 @@ export default function CheckTicketScreen({
 
   return (
     <ScrollView
+      ref={checkScrollRef}
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
       refreshControl={
@@ -660,6 +751,10 @@ export default function CheckTicketScreen({
           tintColor={COLORS.primary}
         />
       }
+      onLayout={() => reportScanCoachRect()}
+      onContentSizeChange={() => reportScanCoachRect()}
+      onScrollEndDrag={() => reportScanCoachRect()}
+      onMomentumScrollEnd={() => reportScanCoachRect()}
     >
       <TouchableOpacity onPress={onBack} style={styles.backBtn}>
         <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
@@ -732,6 +827,7 @@ export default function CheckTicketScreen({
                 ]}
                 onPress={() => {
                   setLotteryId(id);
+                  onLotteryChange?.(id);
                   setLotteryDropdownOpen(false);
                 }}
               >
@@ -741,6 +837,16 @@ export default function CheckTicketScreen({
             ))}
           </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={ocrReading} transparent animationType="fade" statusBarTranslucent>
+        <View style={styles.readingOverlay} pointerEvents="auto">
+          <View style={styles.readingCard}>
+            <ActivityIndicator size="large" color={COLORS.gold} />
+            <Text style={styles.readingTitle}>Reading ticket…</Text>
+            <Text style={styles.readingSubtitle}>Recognizing numbers and date</Text>
+          </View>
+        </View>
       </Modal>
 
       {jurisdiction && (
@@ -774,15 +880,7 @@ export default function CheckTicketScreen({
         ref={scanCoachRef}
         collapsable={false}
         style={styles.entryRow}
-        onLayout={() => {
-          if (checkTourStep === 2 && onCheckTourHighlight) {
-            requestAnimationFrame(() => {
-              scanCoachRef.current?.measureInWindow((x, y, w, h) => {
-                onCheckTourHighlight({ x, y, width: w, height: h });
-              });
-            });
-          }
-        }}
+        onLayout={() => reportScanCoachRect()}
       >
         {Platform.OS !== 'web' ? (
           <TouchableOpacity style={styles.entryBtn} onPress={() => scanDocument()}>
@@ -810,6 +908,7 @@ export default function CheckTicketScreen({
               style={styles.removeImageBtn}
               onPress={() => {
                 setImageUri(null);
+                clearScannedReadings();
                 setOcrDateDetected(false);
                 setDateStatusMsg(null);
                 setOcrRawText(null);
@@ -835,12 +934,18 @@ export default function CheckTicketScreen({
         </View>
       )}
 
-      <Text style={styles.label}>
-        {(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? 'White balls ' : ''}{def.main_count} numbers ({def.main_min}-{def.main_max}, ascending, unique)
-        {(def?.plays_per_ticket ?? 1) > 1 ? ` · ${def?.plays_per_ticket ?? 1} lines` : ''}
-        {(lotteryId === 'powerball' || lotteryId === 'mega_millions') &&
-          ` · last box: ${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} (${def.special_min}–${def.special_max})`}
-      </Text>
+      <View
+        onLayout={(e) => {
+          numbersSectionYRef.current = e.nativeEvent.layout.y;
+        }}
+      >
+        <Text style={styles.label}>
+          {(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? 'White balls ' : ''}{def.main_count} numbers ({def.main_min}-{def.main_max}, ascending, unique)
+          {(def?.plays_per_ticket ?? 1) > 1 ? ` · ${def?.plays_per_ticket ?? 1} lines` : ''}
+          {(lotteryId === 'powerball' || lotteryId === 'mega_millions') &&
+            ` · last box: ${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} (${def.special_min}–${def.special_max})`}
+        </Text>
+      </View>
       {Array.from({ length: def?.plays_per_ticket ?? 1 }, (_, i) => i).map((lineIdx) => {
         const row = (allSets[lineIdx] ?? Array(def.main_count).fill(0)).slice(0, def.main_count);
         const values = row.map((n) => (n > 0 ? String(n) : ''));
@@ -1204,6 +1309,25 @@ const styles = StyleSheet.create({
   dateHintWarn: { color: COLORS.warning },
   scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
   hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
+  readingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(5,8,15,0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  readingCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 16,
+    paddingVertical: 28,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    minWidth: 260,
+    borderWidth: 1,
+    borderColor: '#1e3254',
+  },
+  readingTitle: { marginTop: 18, color: COLORS.text, fontSize: 17, fontWeight: '700' },
+  readingSubtitle: { marginTop: 6, color: COLORS.textMuted, fontSize: 13, textAlign: 'center' },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',

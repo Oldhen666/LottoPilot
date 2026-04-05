@@ -235,10 +235,12 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
         </View>
       ) : null}
 
-      {record.result_json?.addOnResults && Object.keys(record.result_json.addOnResults).length > 0 && (
+      {(!!record.result_json?.addOnResults && Object.keys(record.result_json.addOnResults).length > 0) ||
+      record.add_ons_inputs_json?.EXTRA ||
+      record.add_ons_inputs_json?.ENCORE ? (
         <View style={styles.addOnSection}>
           <Text style={styles.addOnSectionTitle}>Add-on Results</Text>
-          {record.result_json.addOnResults.EXTRA && (
+          {record.result_json?.addOnResults?.EXTRA && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>EXTRA</Text>
               <Text style={styles.addOnText}>
@@ -249,7 +251,16 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               </Text>
             </View>
           )}
-          {record.result_json.addOnResults.ENCORE && (
+          {record.add_ons_inputs_json?.EXTRA && !record.result_json?.addOnResults?.EXTRA && (
+            <View style={styles.addOnBlock}>
+              <Text style={styles.addOnBlockTitle}>EXTRA</Text>
+              <Text style={styles.addOnText}>
+                Your number: {record.add_ons_inputs_json.EXTRA}. Official EXTRA winning number is not in the app database for this draw, so a
+                match cannot be calculated. Update draws (scrape) or confirm on your lottery corporation site.
+              </Text>
+            </View>
+          )}
+          {record.result_json?.addOnResults?.ENCORE && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>ENCORE</Text>
               <Text style={styles.addOnText}>
@@ -260,7 +271,16 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               </Text>
             </View>
           )}
-          {record.result_json.addOnResults.TAG && (
+          {record.add_ons_inputs_json?.ENCORE && !record.result_json?.addOnResults?.ENCORE && (
+            <View style={styles.addOnBlock}>
+              <Text style={styles.addOnBlockTitle}>ENCORE</Text>
+              <Text style={styles.addOnText}>
+                Your number: {record.add_ons_inputs_json.ENCORE}. Official ENCORE winning number is not in the app database for this draw, so a
+                match cannot be calculated. Update draws (scrape) or confirm on OLG.
+              </Text>
+            </View>
+          )}
+          {record.result_json?.addOnResults?.TAG && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>TAG</Text>
               <Text style={styles.addOnText}>
@@ -271,7 +291,7 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               </Text>
             </View>
           )}
-          {record.result_json.addOnResults.POWER_PLAY && (
+          {record.result_json?.addOnResults?.POWER_PLAY && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>Power Play</Text>
               <Text style={styles.addOnText}>
@@ -282,7 +302,7 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               </Text>
             </View>
           )}
-          {record.result_json.addOnResults.DOUBLE_PLAY && (
+          {record.result_json?.addOnResults?.DOUBLE_PLAY && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>Double Play</Text>
               <Text style={styles.addOnText}>
@@ -291,13 +311,13 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
               </Text>
             </View>
           )}
-          {record.result_json.addOnResults.MAXMILLIONS && record.result_json.addOnResults.MAXMILLIONS.hits.length > 0 && (
+          {record.result_json?.addOnResults?.MAXMILLIONS && record.result_json.addOnResults.MAXMILLIONS.hits.length > 0 && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>Maxmillions</Text>
               <Text style={styles.addOnText}>Hit(s): {record.result_json.addOnResults.MAXMILLIONS.hits.length} match(es)</Text>
             </View>
           )}
-          {record.result_json.addOnResults.MEGA_MULTIPLIER && (
+          {record.result_json?.addOnResults?.MEGA_MULTIPLIER && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>Megaplier</Text>
               <Text style={styles.addOnText}>
@@ -309,7 +329,7 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
             </View>
           )}
         </View>
-      )}
+      ) : null}
 
       <TouchableOpacity style={styles.doneBtn} onPress={openExitModal}>
         <Text style={styles.doneBtnText}>Done</Text>

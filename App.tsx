@@ -41,6 +41,7 @@ import {
   setCheckTourCompleted,
   canStartCheckTour,
 } from './src/services/checkTourStorage';
+import { getLastHomeLottery, setLastHomeLottery } from './src/services/homeLotteryStorage';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -69,6 +70,16 @@ function TabHome() {
   const [editRecordId, setEditRecordId] = useState<string | null>(null);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');
   const { jurisdiction, jurisdictionCode, loading: jurisdictionLoading } = useJurisdiction();
+
+  useEffect(() => {
+    let cancelled = false;
+    getLastHomeLottery().then((id) => {
+      if (!cancelled && id) setSelectedLottery(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [checkTourStep, setCheckTourStep] = useState<CheckTourStepIndex | null>(null);
   const [checkTourLoaded, setCheckTourLoaded] = useState(false);
   const [checkTourDonePersisted, setCheckTourDonePersisted] = useState(false);
@@ -110,10 +121,16 @@ function TabHome() {
   const handleLotteryChange = useCallback(
     (id: LotteryId) => {
       setSelectedLottery(id);
+      void setLastHomeLottery(id);
       if (checkTourStep === 0) setCheckTourStep(1);
     },
     [checkTourStep],
   );
+
+  const handleCheckScreenLotteryChange = useCallback((id: LotteryId) => {
+    setSelectedLottery(id);
+    void setLastHomeLottery(id);
+  }, []);
 
   const handleCheckTicket = useCallback(() => {
     setScreen('check');
@@ -127,17 +144,12 @@ function TabHome() {
   const showCheckTourOverlay =
     checkTourStep !== null && (screen === 'home' || screen === 'check');
 
-  useEffect(() => {
-    if (checkTourStep === 2 && screen === 'check') {
-      setCheckTourHighlightRect(null);
-    }
-  }, [checkTourStep, screen]);
-
   let main: React.ReactNode;
   if (screen === 'check') {
     main = (
       <CheckTicketScreen
         preselectedLottery={selectedLottery}
+        onLotteryChange={handleCheckScreenLotteryChange}
         jurisdiction={jurisdiction}
         jurisdictionCode={jurisdictionCode}
         initialRecordId={editRecordId}
@@ -193,7 +205,13 @@ function TabHome() {
           step={checkTourStep!}
           highlightRect={checkTourHighlightRect}
           onSkip={finishCheckTour}
-          onNext={checkTourStep === 0 ? checkTourNextFromStep0 : undefined}
+          onNext={
+            checkTourStep === 0
+              ? checkTourNextFromStep0
+              : checkTourStep === 1
+                ? handleCheckTicket
+                : undefined
+          }
           onDone={checkTourStep === 2 ? finishCheckTour : undefined}
         />
       ) : null}

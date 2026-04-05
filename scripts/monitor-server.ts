@@ -8,6 +8,11 @@ import { fetchLatestDates, runUpdate, LOTTERY_LABELS, type Status } from './moni
 
 const PORT = parseInt(process.env.MONITOR_PORT || '3333', 10);
 
+/** Background scrape state for Web UI (HTTP cannot block for 10+ min while npm run scrape runs). */
+let scrapeBusy = false;
+let scrapeLastError: string | null = null;
+let scrapeLastFinishedAt: number | null = null;
+
 const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -38,6 +43,7 @@ const HTML = `<!DOCTYPE html>
       border: 1px solid #334155;
     }
     .card.stale { border-color: #f59e0b; background: #422006; }
+    .card.addon-warn { border-color: #ea580c; background: #431407; }
     .card .name { font-weight: 600; margin-bottom: 4px; }
     .card .date { font-size: 0.9rem; color: #94a3b8; }
     .card .days { font-size: 0.85rem; color: #64748b; }
@@ -78,7 +84,7 @@ const HTML = `<!DOCTYPE html>
 </head>
 <body>
   <h1>LottoPilot 数据监控</h1>
-  <p style="font-size:13px;color:#64748b;margin:0 0 16px;">自动检查：每日 0:00；开启「自动更新」时届时先抓取再刷新</p>
+  <p style="font-size:13px;color:#64748b;margin:0 0 16px;">「需更新」= 库中最新开奖日早于推算的<strong>应有</strong>日期（数据落后），不是程序坏了。点「更新数据库」会后台运行 <code>npm run scrape</code>，通常需<strong>数分钟</strong>，请看你运行本监控的<strong>终端窗口</strong>里的日志。自动检查：每日 0:00；开启「自动更新」时届时先抓取再刷新。</p>
   <div class="actions">
     <button class="btn-check" id="btnCheck" onclick="check()">检查状态</button>
     <button class="btn-update" id="btnUpdate" onclick="update()">更新数据库</button>
@@ -120,11 +126,17 @@ const HTML = `<!DOCTYPE html>
         const date = s.latest_date || '-';
         const days = s.days_ago != null ? s.days_ago + ' 天前' : '-';
         const exp = s.expected_latest ? '<div class="exp">应有≥ ' + s.expected_latest + '</div>' : '';
+        var bits = [];
+        if (s.extra_ok !== null && s.extra_ok !== undefined) bits.push('EXTRA:' + (s.extra_ok ? '✓' : '缺'));
+        if (s.encore_ok !== null && s.encore_ok !== undefined) bits.push('ENCORE:' + (s.encore_ok ? '✓' : '缺'));
+        const addon = bits.length ? '<div class="exp">' + bits.join(' · ') + '</div>' : '';
+        const addonWarn = s.extra_ok === false || s.encore_ok === false;
         const badge = s.stale ? '<span class="badge warn">需更新</span>' : '<span class="badge ok">正常</span>';
-        return '<div class="card' + (s.stale ? ' stale' : '') + '">' +
+        var cardCls = 'card' + (s.stale ? ' stale' : '') + (addonWarn ? ' addon-warn' : '');
+        return '<div class="' + cardCls + '">' +
           '<div class="name">' + name + '</div>' +
           '<div class="date">' + date + '</div>' +
-          '<div class="days">' + days + '</div>' + exp + badge + '</div>';
+          '<div class="days">' + days + '</div>' + exp + addon + badge + '</div>';
       }).join('');
     }
     async function check() {
@@ -137,22 +149,67 @@ const HTML = `<!DOCTYPE html>
         log('检查失败: ' + e.message, true);
       }
     }
+    function pollScrapeUntilDone() {
+      return new Promise(function (resolve, reject) {
+        var n = 0;
+        var maxN = 450;
+        function tick() {
+          n++;
+          fetch('/api/scrape-status')
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+              if (!d.busy) resolve(d);
+              else if (n >= maxN) resolve({ busy: false, lastError: null, timeout: true });
+              else setTimeout(tick, 2000);
+            })
+            .catch(reject);
+        }
+        tick();
+      });
+    }
     async function update() {
       const btn = document.getElementById('btnUpdate');
       const btnCheck = document.getElementById('btnCheck');
       btn.disabled = true;
       if (btnCheck) btnCheck.disabled = true;
-      log('正在更新...');
+      log('正在请求更新…');
+      function releaseBtns() {
+        btn.disabled = false;
+        if (btnCheck) btnCheck.disabled = false;
+      }
       try {
         const r = await fetch('/api/update', { method: 'POST' });
-        if (!r.ok) throw new Error(await r.text());
+        const text = await r.text();
+        var j = {};
+        try { j = JSON.parse(text); } catch (e) {}
+        if (r.status === 409) {
+          log(j.message || '已有抓取在运行，请稍候');
+          releaseBtns();
+          return;
+        }
+        if (r.status === 202 && j.started) {
+          log('抓取已在后台运行（常需 1～10 分钟）。请看运行 monitor:ui 的终端里的 scrape 输出。');
+          try {
+            var d = await pollScrapeUntilDone();
+            if (d.timeout) log('等待超时（15 分钟）。若终端仍在跑 scrape 请继续等待，完成后点「检查状态」。', true);
+            else if (d.lastError) log('更新失败: ' + d.lastError, true);
+            else {
+              log('更新完成');
+              await check();
+            }
+          } catch (e) {
+            log('轮询失败: ' + e.message, true);
+          }
+          releaseBtns();
+          return;
+        }
+        if (!r.ok) throw new Error(text || r.statusText);
         log('更新完成');
         await check();
       } catch (e) {
         log('更新失败: ' + e.message, true);
       }
-      btn.disabled = false;
-      if (btnCheck) btnCheck.disabled = false;
+      releaseBtns();
     }
     function scheduleNextMidnight() {
       const now = new Date();
@@ -165,9 +222,22 @@ const HTML = `<!DOCTYPE html>
           if (getAutoUpdate()) {
             log('定时任务：自动更新数据库...');
             const r = await fetch('/api/update', { method: 'POST' });
-            if (!r.ok) throw new Error(await r.text());
-            log('定时任务：更新完成');
-            await check();
+            const t = await r.text();
+            var jj = {};
+            try { jj = JSON.parse(t); } catch (e) {}
+            if (r.status === 409) {
+              log('定时任务：上次抓取仍在运行，跳过');
+            } else if (r.status === 202 && jj.started) {
+              var dd = await pollScrapeUntilDone();
+              if (dd.lastError) log('定时任务：更新失败 ' + dd.lastError, true);
+              else if (!dd.timeout) log('定时任务：更新完成');
+              await check();
+            } else if (!r.ok) {
+              throw new Error(t || r.statusText);
+            } else {
+              log('定时任务：更新完成');
+              await check();
+            }
           } else {
             await check();
           }
@@ -203,15 +273,39 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse) {
       });
     return;
   }
+  if (url === '/api/scrape-status' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        busy: scrapeBusy,
+        lastError: scrapeLastError,
+        lastFinishedAt: scrapeLastFinishedAt,
+      }),
+    );
+    return;
+  }
   if (url === '/api/update' && req.method === 'POST') {
+    if (scrapeBusy) {
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, message: '抓取已在运行中，请稍候' }));
+      return;
+    }
+    scrapeBusy = true;
+    scrapeLastError = null;
+    res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, started: true, message: 'Scrape started' }));
     runUpdate()
       .then(() => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        scrapeLastFinishedAt = Date.now();
+        console.log('[monitor] npm run scrape finished OK');
       })
-      .catch((e) => {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end(String(e.message));
+      .catch((e: Error) => {
+        scrapeLastError = String(e?.message ?? e);
+        scrapeLastFinishedAt = Date.now();
+        console.error('[monitor] npm run scrape failed:', scrapeLastError);
+      })
+      .finally(() => {
+        scrapeBusy = false;
       });
     return;
   }
