@@ -9,7 +9,7 @@ module.exports = {
     name: 'LottoPilot',
     slug: 'LottoPilot',
     scheme: 'lottopilot',
-    version: '1.0.3',
+    version: '1.0.6',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -26,7 +26,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 26,
+      versionCode: 30,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -57,11 +57,14 @@ module.exports = {
       ['react-native-document-scanner-plugin', {
         cameraPermission: 'Allow LottoPilot to scan lottery tickets (flattens angled photos)',
       }],
+      './plugins/withAndroidAdIdPermission.js',
     ],
     extra: {
       eas: {
         projectId: '2ae23643-f627-4cfc-9214-764502ce4849',
       },
+      /** 与 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1 同步，供 release 包读取 */
+      powerballScanDiagnostic: process.env.EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC === '1',
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
       authCallbackUrl: process.env.EXPO_PUBLIC_AUTH_CALLBACK_URL || '',

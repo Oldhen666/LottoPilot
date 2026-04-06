@@ -1,0 +1,15 @@
+diff --git a/node_modules/jpeg-js/lib/encoder.js b/node_modules/jpeg-js/lib/encoder.js
+index fdbc184..7b28df9 100644
+--- a/node_modules/jpeg-js/lib/encoder.js
++++ b/node_modules/jpeg-js/lib/encoder.js
+@@ -728,8 +728,8 @@ function JPEGEncoder(quality) {
+ 	
+ 			writeWord(0xFFD9); //EOI
+ 
+-			if (typeof module === 'undefined') return new Uint8Array(byteout);
+-      return Buffer.from(byteout);
++			/* Hermes / RN: no Node Buffer — always Uint8Array (byteout is number[]). */
++			return new Uint8Array(byteout);
+ 
+ 			var jpegDataUri = 'data:image/jpeg;base64,' + btoa(byteout.join(''));
+ 			

@@ -166,6 +166,49 @@ export function subtractBackground(gray: Uint8ClampedArray, bgBlur: Float32Array
   return out;
 }
 
+/**
+ * Grayscale with warm mid-tones (orange/yellow lottery seals) lifted toward white — similar to scanner "Enhance".
+ * Keeps dark strokes (black digits) relatively intact.
+ */
+export function rgbaToGrayscaleWatermarkFade(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Uint8ClampedArray {
+  const n = width * height;
+  const g = new Uint8ClampedArray(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const r = rgba[p];
+    const g0 = rgba[p + 1];
+    const b = rgba[p + 2];
+    const mn = Math.min(r, g0, b);
+    const mx = Math.max(r, g0, b);
+    const maxc = mx - mn;
+    const l = 0.299 * r + 0.587 * g0 + 0.114 * b;
+    let v = l;
+    if (maxc > 18 && l > 135 && l < 250) {
+      const fade = Math.min(0.72, (maxc / 100) * 0.35 + ((l - 135) / 400) * 0.21);
+      v = l + (255 - l) * fade;
+    }
+    g[i] = Math.round(v < 0 ? 0 : v > 255 ? 255 : v);
+  }
+  return g;
+}
+
+/**
+ * High-pass via large Gaussian blur: fades broad watermarks / gradients, keeps strokes (exposure-like).
+ */
+export function highPassSubtractBackground(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  blurKernel: number,
+  sigma: number,
+): Uint8ClampedArray {
+  const bg = gaussianBlurGray(gray, width, height, blurKernel | 1, sigma);
+  return subtractBackground(gray, bg);
+}
+
 function integralGray(gray: Uint8ClampedArray, width: number, height: number): Float64Array {
   const W = width + 1;
   const I = new Float64Array(W * (height + 1));
@@ -275,6 +318,268 @@ export function morphOpenClose(bin: Uint8ClampedArray, width: number, height: nu
 }
 
 /** Blend stronger local contrast into base in rect (0–1 coords). Soft feather at inner edges. */
+/** Dark-pixel count per row (for row band detection). */
+export function horizontalProjectionInk(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  inkThreshold = 210,
+): Float32Array {
+  const proj = new Float32Array(height);
+  for (let y = 0; y < height; y++) {
+    let s = 0;
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      if (gray[row + x] < inkThreshold) s += 1;
+    }
+    proj[y] = s;
+  }
+  return proj;
+}
+
+/** Sum of ink in vertical band [x0, x1) per row — TX-style PB column has strong peaks per row. */
+export function horizontalProjectionInkInBand(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x0: number,
+  x1: number,
+  inkThreshold = 210,
+): Float32Array {
+  const proj = new Float32Array(height);
+  const xa = Math.max(0, Math.min(width, x0));
+  const xb = Math.max(0, Math.min(width, x1));
+  for (let y = 0; y < height; y++) {
+    let s = 0;
+    const row = y * width;
+    for (let x = xa; x < xb; x++) {
+      if (gray[row + x] < inkThreshold) s += 1;
+    }
+    proj[y] = s;
+  }
+  return proj;
+}
+
+/**
+ * Copy horizontal band [y0, y1) into a tight buffer height = (y1-y0), width unchanged.
+ * Used so row segmentation / ink search never reads pixels from other rows.
+ */
+export function extractGrayBand(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  y0: number,
+  y1: number,
+): Uint8ClampedArray {
+  const ya = Math.max(0, Math.min(height, Math.min(y0, y1)));
+  const yb = Math.max(0, Math.min(height, Math.max(y0, y1)));
+  const rh = yb - ya;
+  if (rh <= 0 || width <= 0) return new Uint8ClampedArray(0);
+  const out = new Uint8ClampedArray(width * rh);
+  for (let y = 0; y < rh; y++) {
+    const src = (ya + y) * width;
+    out.set(gray.subarray(src, src + width), y * width);
+  }
+  return out;
+}
+
+/** Per-column ink sum in axis-aligned rect [x0,x1)×[y0,y1) — for column boundary detection. */
+export function verticalProjectionInkInRect(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  inkThreshold = 210,
+): Float32Array {
+  const xa = Math.max(0, Math.min(width, x0));
+  const xb = Math.max(0, Math.min(width, x1));
+  const ya = Math.max(0, Math.min(height, y0));
+  const yb = Math.max(0, Math.min(height, y1));
+  const nw = Math.max(0, xb - xa);
+  const proj = new Float32Array(nw);
+  for (let xi = 0; xi < nw; xi++) {
+    const x = xa + xi;
+    let s = 0;
+    for (let y = ya; y < yb; y++) {
+      if (gray[y * width + x]! < inkThreshold) s += 1;
+    }
+    proj[xi] = s;
+  }
+  return proj;
+}
+
+/** Local std dev in a window (watermark / noisy background tends to be higher). */
+export function meanLocalStdSample(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  step = 4,
+): number {
+  let sum = 0;
+  let count = 0;
+  const win = 5;
+  for (let y = y0; y < y1; y += step) {
+    for (let x = x0; x < x1; x += step) {
+      let m = 0;
+      let n = 0;
+      for (let dy = -win; dy <= win; dy++) {
+        for (let dx = -win; dx <= win; dx++) {
+          const yy = y + dy;
+          const xx = x + dx;
+          if (yy < 0 || yy >= height || xx < 0 || xx >= width) continue;
+          m += gray[yy * width + xx];
+          n++;
+        }
+      }
+      if (n === 0) continue;
+      m /= n;
+      let v = 0;
+      for (let dy = -win; dy <= win; dy++) {
+        for (let dx = -win; dx <= win; dx++) {
+          const yy = y + dy;
+          const xx = x + dx;
+          if (yy < 0 || yy >= height || xx < 0 || xx >= width) continue;
+          const d = gray[yy * width + xx] - m;
+          v += d * d;
+        }
+      }
+      sum += Math.sqrt(v / n);
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+/** Draw white rectangle outlines (diagnostic: cell crop boxes). x1/y1 exclusive. */
+export function drawRectanglesOutline(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  rects: { x0: number; y0: number; x1: number; y1: number }[],
+  lineWidth = 2,
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(gray);
+  const setPix = (x: number, y: number) => {
+    if (x >= 0 && x < width && y >= 0 && y < height) out[y * width + x] = 255;
+  };
+  for (const r of rects) {
+    const x0 = Math.max(0, Math.min(width - 1, Math.floor(r.x0)));
+    const y0 = Math.max(0, Math.min(height - 1, Math.floor(r.y0)));
+    const x1 = Math.max(x0 + 1, Math.min(width, Math.floor(r.x1)));
+    const y1 = Math.max(y0 + 1, Math.min(height, Math.floor(r.y1)));
+    const lw = Math.max(1, lineWidth);
+    for (let t = 0; t < lw; t++) {
+      for (let x = x0; x < x1; x++) {
+        setPix(x, y0 + t);
+        setPix(x, y1 - 1 - t);
+      }
+      for (let y = y0; y < y1; y++) {
+        setPix(x0 + t, y);
+        setPix(x1 - 1 - t, y);
+      }
+    }
+  }
+  return out;
+}
+
+/** Draw white horizontal rules at given y (row-band diagnostic overlay). */
+export function drawHorizontalGuideLines(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  ys: number[],
+  lineWidth = 2,
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(gray);
+  for (const y0 of ys) {
+    for (let dy = 0; dy < lineWidth; dy++) {
+      const y = y0 + dy;
+      if (y < 0 || y >= height) continue;
+      for (let x = 0; x < width; x++) {
+        out[y * width + x] = 255;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Trim to tight ink bounds (ticket boundary heuristic). Returns new buffer + offset for coordinate mapping.
+ */
+export function trimInkBounds(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  inkThreshold = 218,
+  minPad = 4,
+): { gray: Uint8ClampedArray; width: number; height: number; ox: number; oy: number } {
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (gray[y * width + x] < inkThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (minX >= maxX || minY >= maxY) {
+    return { gray, width, height, ox: 0, oy: 0 };
+  }
+  minX = Math.max(0, minX - minPad);
+  minY = Math.max(0, minY - minPad);
+  maxX = Math.min(width - 1, maxX + minPad);
+  maxY = Math.min(height - 1, maxY + minPad);
+  const nw = maxX - minX + 1;
+  const nh = maxY - minY + 1;
+  const out = new Uint8ClampedArray(nw * nh);
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      out[y * nw + x] = gray[(minY + y) * width + (minX + x)];
+    }
+  }
+  return { gray: out, width: nw, height: nh, ox: minX, oy: minY };
+}
+
+/** Crop gray to axis-aligned rect (pixel coords, inclusive-exclusive). */
+export function cropGrayRect(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): { gray: Uint8ClampedArray; width: number; height: number } {
+  const xa = Math.max(0, Math.min(width, Math.min(x0, x1)));
+  const ya = Math.max(0, Math.min(height, Math.min(y0, y1)));
+  const xb = Math.max(0, Math.min(width, Math.max(x0, x1)));
+  const yb = Math.max(0, Math.min(height, Math.max(y0, y1)));
+  const nw = xb - xa;
+  const nh = yb - ya;
+  if (nw <= 0 || nh <= 0) {
+    return { gray: new Uint8ClampedArray(0), width: 0, height: 0 };
+  }
+  const out = new Uint8ClampedArray(nw * nh);
+  for (let y = 0; y < nh; y++) {
+    for (let x = 0; x < nw; x++) {
+      out[y * nw + x] = gray[(ya + y) * width + (xa + x)];
+    }
+  }
+  return { gray: out, width: nw, height: nh };
+}
+
 export function blendRegionStronger(
   base: Uint8ClampedArray,
   strong: Uint8ClampedArray,

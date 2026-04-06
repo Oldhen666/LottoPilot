@@ -5,7 +5,22 @@
 
 import { Platform } from 'react-native';
 import type { LotteryId } from '../types/lottery';
+import {
+  fixUsPbLeadingDigitNoise,
+  mergeUsPbLeadingZeroPair,
+  parseUsPbMmLine,
+  stripUsPlayLineLetterPrefix,
+} from './powerballOcr/usParseLine';
+import { USE_LAYERED_POWERBALL_OCR } from './powerballOcr/constants';
+import { recognizeTicketText } from './powerballOcr/mlkitRecognize';
+import { copyVariantUrisForDebug } from './ticketPreprocess/debugCopy';
 import { preprocessTicketImageForOcr } from './ticketPreprocess/preprocessTicketImage';
+
+/** Dev-only: preprocess variants copied to stable file URIs for UI preview. */
+export type TicketPreprocessDebugInfo = { uris: string[]; labels: string[] };
+
+/** Powerball layered path: per-scan folder under documentDirectory/scan_debug/ + summary.json */
+export type TicketScanDiagnosticBundleInfo = { folderUri: string; summary: Record<string, unknown> };
 
 /** Add-on data detected from OCR (auto-check when present) */
 export interface ParsedAddOns {
@@ -36,8 +51,7 @@ export interface ParsedTicket {
 export async function getRawOcrText(imageUri: string): Promise<{ fullText: string } | null> {
   if (Platform.OS === 'web') return null;
   try {
-    const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-    const result = await ExpoMlkitOcr.recognizeText(imageUri);
+    const result = await recognizeTicketText(imageUri);
     const text = result?.text ?? '';
     return text.trim() ? { fullText: text } : null;
   } catch {
@@ -203,49 +217,7 @@ function cleanTicketText(text: string): string {
     .trim();
 }
 
-/**
- * One play row: first mainCount unique numbers in [1, mainMax] (order of appearance), then
- * Power/Mega ball = last number in line that lies in special range; if that equals a main, scan backward for another in range.
- */
-function parseUsPbMmLine(
-  line: string,
-  mainCount: number,
-  mainMax: number,
-  specialMin: number,
-  specialMax: number,
-): { main: number[]; special: number | null } {
-  const raw = line.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
-  const mains: number[] = [];
-  const used = new Set<number>();
-  for (const n of raw) {
-    if (mains.length < mainCount && n >= 1 && n <= mainMax && !used.has(n)) {
-      mains.push(n);
-      used.add(n);
-    }
-  }
-  if (mains.length < mainCount) {
-    return { main: mains.sort((a, b) => a - b), special: null };
-  }
-  let special: number | null = null;
-  for (let i = raw.length - 1; i >= 0; i--) {
-    const n = raw[i];
-    if (n < specialMin || n > specialMax) continue;
-    if (!mains.includes(n)) {
-      special = n;
-      break;
-    }
-  }
-  if (special == null) {
-    for (let i = raw.length - 1; i >= 0; i--) {
-      const n = raw[i];
-      if (n >= specialMin && n <= specialMax) {
-        special = n;
-        break;
-      }
-    }
-  }
-  return { main: mains.sort((a, b) => a - b), special };
-}
+/** US PB/MM row parsing lives in powerballOcr/usParseLine (includes CA play-line "A" stripping). */
 
 function extractUsPbMmFromBlocks(
   blocks: Array<{ text: string; lines?: Array<{ text: string }> }>,
@@ -316,7 +288,12 @@ function extractUsPbMmFromDigitStream(
   specialMax: number,
   maxPlays: number,
 ): { allSets: number[][]; specialsPerLine: number[] } {
-  const allDigits = fullText.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
+  const normalized = stripUsPlayLineLetterPrefix(fullText.replace(/\s+/g, ' '));
+  let allDigits =
+    normalized.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
+  allDigits = mergeUsPbLeadingZeroPair(allDigits);
+  allDigits = fixUsPbLeadingDigitNoise(allDigits);
+  /** Trailing 2+5→25 is applied in parseUsPbMmLine per line only; digit-stream multi-play would mis-merge if done globally. */
   const allSets: number[][] = [];
   const specialsPerLine: number[] = [];
   let i = 0;
@@ -411,12 +388,13 @@ function extractNumbers(
   return { main: main.sort((a, b) => a - b), special, allSets };
 }
 
-type MlKitResult = {
+export type MlKitResult = {
   text: string;
   blocks?: Array<{ text: string; lines?: Array<{ text: string }> }>;
 };
 
-function parseMlKitResultToTicket(
+/** Exported for layered Powerball pipeline; keep signature in sync with ML Kit output. */
+export function parseMlKitResultToTicket(
   result: MlKitResult,
   options: {
     mainCount: number;
@@ -517,6 +495,11 @@ export async function parseTicketFromImage(
     lotteryId?: string;
     jurisdictionCode?: string;
     playsPerTicket?: number;
+    /** Dev: called with copied URIs right before temp preprocess files are deleted. */
+    debugPreprocessPreview?: (info: TicketPreprocessDebugInfo) => void;
+    /** Powerball layered OCR: write full diagnostic bundle (images + summary.json). */
+    diagnosticBundle?: boolean;
+    onDiagnosticBundle?: (info: TicketScanDiagnosticBundleInfo) => void;
   }
 ): Promise<ParsedTicket | null> {
   if (Platform.OS === 'web') return null;
@@ -538,17 +521,32 @@ export async function parseTicketFromImage(
     playsPerTicket: options?.playsPerTicket,
   };
 
-  const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-
   const runOne = async (uri: string) => {
-    const result = (await ExpoMlkitOcr.recognizeText(uri)) as MlKitResult;
+    const result = (await recognizeTicketText(uri)) as MlKitResult;
     return parseMlKitResultToTicket(result, parseOpts);
   };
+
+  if (lotteryId === 'powerball' && USE_LAYERED_POWERBALL_OCR) {
+    try {
+      const { runPowerballLayeredPipeline } = await import('./powerballOcr/pipeline');
+      const layered = await runPowerballLayeredPipeline(imageUri, {
+        ...parseOpts,
+        debugPreprocessPreview: options?.debugPreprocessPreview,
+        diagnosticBundle: options?.diagnosticBundle,
+        onDiagnosticBundle: options?.onDiagnosticBundle,
+      });
+      if (layered) return layered;
+    } catch {
+      /* Pipeline swallows most errors and returns null after writing a minimal diagnostic folder.
+       * Do not call onDiagnosticBundle here — it would overwrite folderUri with an empty string. */
+      /* fall through to generic preprocess */
+    }
+  }
 
   try {
     const pre = await preprocessTicketImageForOcr(imageUri, lotteryId);
     try {
-      const results = await Promise.all(pre.variantUris.map((u) => ExpoMlkitOcr.recognizeText(u)));
+      const results = await Promise.all(pre.variantUris.map((u) => recognizeTicketText(u)));
       let best: ParsedTicket | null = null;
       let bestScore = -1;
       for (let i = 0; i < results.length; i++) {
@@ -566,6 +564,14 @@ export async function parseTicketFromImage(
       }
       return await runOne(imageUri);
     } finally {
+      if (options?.debugPreprocessPreview && pre.variantUris.length > 0) {
+        try {
+          const uris = await copyVariantUrisForDebug(pre.variantUris);
+          options.debugPreprocessPreview({ uris, labels: pre.labels });
+        } catch {
+          /* ignore */
+        }
+      }
       await pre.cleanup();
     }
   } catch {

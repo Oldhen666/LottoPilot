@@ -16,7 +16,10 @@
     "seed": "ts-node --project scripts/tsconfig.json scripts/seed-draws.ts",
     "seed:encore": "ts-node --project scripts/tsconfig.json scripts/seed-encore-draw.ts",
     "compass:update": "ts-node --project scripts/tsconfig.json scripts/update-compass.ts",
-    "test": "node node_modules/jest/bin/jest.js"
+    "postinstall": "patch-package",
+    "test": "node node_modules/jest/bin/jest.js",
+    "update:preview": "eas update --channel preview --environment preview",
+    "update:production": "eas update --channel production --environment production"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -26,6 +29,7 @@
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/native-stack": "^7.13.0",
     "@supabase/supabase-js": "^2.97.0",
+    "buffer": "^6.0.3",
     "expo": "^54.0.33",
     "expo-dev-client": "~6.0.20",
     "expo-file-system": "~19.0.21",
@@ -42,6 +46,7 @@
     "expo-updates": "~29.0.16",
     "fetch-retry": "^6.0.0",
     "jpeg-js": "^0.4.4",
+    "jszip": "^3.10.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -59,6 +64,7 @@
     "dotenv": "^17.3.1",
     "electron": "^41.0.3",
     "jest": "^29.7.0",
+    "patch-package": "^8.0.1",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "~5.9.2",

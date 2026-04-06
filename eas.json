@@ -13,6 +13,9 @@
       "environment": "preview",
       "android": {
         "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC": "1"
       }
     },
     "production": {
@@ -20,6 +23,9 @@
       "environment": "production",
       "android": {
         "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC": "1"
       }
     }
   },

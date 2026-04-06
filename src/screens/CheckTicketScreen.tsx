@@ -29,7 +29,14 @@ import { insertRecord, getRecordById } from '../db/sqlite';
 import { computePrize } from '../engine/prizeEngine';
 import { computeAddOnResults } from '../engine/addOnEngine';
 import { fetchAddOnCatalog, isUserSelectableAddOn } from '../services/addOnCatalog';
-import { parseTicketFromImage } from '../services/ocr';
+import { parseTicketFromImage, type TicketScanDiagnosticBundleInfo } from '../services/ocr';
+import { isPowerballScanDiagnosticEnabled } from '../config/scanDiagnostic';
+import {
+  openChatGptForDiagnosticUpload,
+  saveScanDiagnosticFolderToChosenDirectory,
+  shareScanDiagnosticFolderAsZip,
+} from '../services/powerballOcr/scanDiagnosticZip';
+import { deleteDebugVariantUris } from '../services/ticketPreprocess/debugCopy';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
 import { MainNumbersBoxes } from '../components/MainNumbersBoxes';
@@ -108,8 +115,16 @@ export default function CheckTicketScreen({
   const [refreshing, setRefreshing] = useState(false);
   /** Full-screen overlay while OCR / preprocessing runs on a ticket image. */
   const [ocrReading, setOcrReading] = useState(false);
+  /** __DEV__ only: copied preprocess variant URIs for debugging (remove UI when done). */
+  const [devPreprocessDebug, setDevPreprocessDebug] = useState<{ uris: string[]; labels: string[] } | null>(null);
+  /** Powerball scan diagnostic bundle path + summary (remove block with banner ad section when done). */
+  const [scanDiagnostic, setScanDiagnostic] = useState<TicketScanDiagnosticBundleInfo | null>(null);
+  const [scanDiagOp, setScanDiagOp] = useState<null | 'share' | 'folder'>(null);
   const { draws, loading } = useDraws(lotteryId, refetchTrigger);
   const def = LOTTERY_DEFS[lotteryId];
+  /** 开发包默认可用；release 需 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1（见 app.config extra） */
+  const showPbDiagnosticUi =
+    isPowerballScanDiagnosticEnabled() && lotteryId === 'powerball' && Platform.OS !== 'web';
   const rawDrawsList = [...draws, ...extraDraws.filter((e) => !draws.some((d) => d.draw_date === e.draw_date))];
   const drawsList = lotteryId === 'powerball'
     ? rawDrawsList.filter((d) => isValidDrawDate(d.draw_date, 'powerball'))
@@ -151,6 +166,17 @@ export default function CheckTicketScreen({
     reportScanCoachRect();
   }, [reportScanCoachRect, lotteryId]);
 
+  /** 诊断区在 ScrollView 最底部（广告下方），出现后滚到底避免被底栏挡住 */
+  useEffect(() => {
+    if (!showPbDiagnosticUi) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        checkScrollRef.current?.scrollToEnd({ animated: true });
+      }, 120);
+    });
+    return () => task.cancel?.();
+  }, [scanDiagnostic, showPbDiagnosticUi]);
+
   useEffect(() => {
     setLotteryId(preselectedLottery);
   }, [preselectedLottery]);
@@ -180,6 +206,13 @@ export default function CheckTicketScreen({
 
   /** Clear OCR-filled numbers and add-ons when user removes the preview image. */
   const clearScannedReadings = useCallback(() => {
+    setDevPreprocessDebug((prev) => {
+      if (prev?.uris?.length) {
+        deleteDebugVariantUris(prev.uris).catch(() => {});
+      }
+      return null;
+    });
+    setScanDiagnostic(null);
     const d = LOTTERY_DEFS[lotteryId];
     const cnt = d?.main_count ?? 7;
     const plays = d?.plays_per_ticket ?? 1;
@@ -537,6 +570,26 @@ export default function CheckTicketScreen({
       lotteryId,
       jurisdictionCode: jCode,
       playsPerTicket: def.plays_per_ticket,
+      ...(__DEV__
+        ? {
+            debugPreprocessPreview: (info: { uris: string[]; labels: string[] }) => {
+              setDevPreprocessDebug((prev) => {
+                if (prev?.uris?.length) {
+                  deleteDebugVariantUris(prev.uris).catch(() => {});
+                }
+                return info;
+              });
+            },
+          }
+        : {}),
+      ...(showPbDiagnosticUi
+        ? {
+            diagnosticBundle: true,
+            onDiagnosticBundle: (info: TicketScanDiagnosticBundleInfo) => {
+              setScanDiagnostic(info);
+            },
+          }
+        : {}),
     } : undefined);
     if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
       if (parsed.allSets?.length) {
@@ -743,7 +796,17 @@ export default function CheckTicketScreen({
     <ScrollView
       ref={checkScrollRef}
       style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
+      contentContainerStyle={[
+        styles.content,
+        {
+          paddingTop: insets.top + SPACING.screenPadding,
+          /** 底栏 Tab 会盖住 ScrollView 末尾；诊断区在广告下方，需额外留白才能滚到底看见 */
+          paddingBottom:
+            SPACING.screenPaddingBottom +
+            insets.bottom +
+            (showPbDiagnosticUi ? SPACING.tabBarHeight + 24 : 0),
+        },
+      ]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -931,6 +994,28 @@ export default function CheckTicketScreen({
                 : 'If numbers weren\'t detected, enter manually below. If draw date is wrong, select the correct date above.'}
             </Text>
           )}
+          {__DEV__ && Platform.OS !== 'web' && devPreprocessDebug && devPreprocessDebug.uris.length > 0 ? (
+            <View style={styles.devPreBlock}>
+              <Text style={styles.devPreLabel}>
+                DEV: OCR 预处理变体（调试用，发布前删掉本段 UI）
+              </Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator
+                style={styles.devPreScroll}
+                contentContainerStyle={styles.devPreScrollContent}
+              >
+                {devPreprocessDebug.uris.map((u, i) => (
+                  <View key={`${u}-${i}`} style={styles.devPreItem}>
+                    <Image source={{ uri: u }} style={styles.devPreThumb} resizeMode="contain" />
+                    <Text style={styles.devPreCap} numberOfLines={1}>
+                      {devPreprocessDebug.labels[i] ?? `v${i}`}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
         </View>
       )}
 
@@ -1104,6 +1189,115 @@ export default function CheckTicketScreen({
       </TouchableOpacity>
 
       <BannerAdPlaceholder testId="check-bottom" userPlan={plan} />
+
+      {showPbDiagnosticUi ? (
+        <View style={styles.scanDiagnosticSection}>
+          {scanDiagnostic ? (
+            <>
+              <Text style={styles.scanDiagnosticTitle}>Scan diagnostic bundle (remove this block later)</Text>
+              <Text style={styles.scanDiagnosticHint}>
+                下面 file:// 为应用私有目录。发给 ChatGPT：先「保存到所选文件夹」把 ZIP
+                存到下载/文件，再点「打开 ChatGPT」在网页里用 📎 上传（若不支持 ZIP 可解压后上传图片）。iPhone
+                也可「分享诊断 ZIP」直接发到文件或其它 App。Android 系统分享无法附带 ZIP，请用保存 + 打开网页。
+              </Text>
+              {scanDiagnostic.folderUri && scanDiagnostic.folderUri.startsWith('file') ? (
+                <View style={styles.scanDiagnosticBtnRow}>
+                  {Platform.OS === 'ios' ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.scanDiagnosticShareBtn,
+                        scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
+                      ]}
+                      disabled={scanDiagOp !== null}
+                      onPress={async () => {
+                        setScanDiagOp('share');
+                        try {
+                          await shareScanDiagnosticFolderAsZip(scanDiagnostic.folderUri);
+                        } catch (e) {
+                          Alert.alert('导出失败', (e as Error)?.message ?? String(e));
+                        } finally {
+                          setScanDiagOp(null);
+                        }
+                      }}
+                    >
+                      <Text style={styles.scanDiagnosticShareBtnText}>
+                        {scanDiagOp === 'share' ? '正在打包…' : '分享诊断 ZIP'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.scanDiagnosticShareBtn, styles.scanDiagnosticSaveFolderBtn]}
+                      onPress={() => {
+                        Alert.alert(
+                          '给 ChatGPT 发诊断包',
+                          '1）先点「保存到所选文件夹」，把 ZIP 存到手机（如「下载」）。\n2）再点「打开 ChatGPT」，在对话里点 📎 选择该 ZIP。\n\n若网页版不支持 ZIP，请用文件管理器解压后上传里面的 JPG/PNG。',
+                          [
+                            { text: '取消', style: 'cancel' },
+                            {
+                              text: '打开 ChatGPT',
+                              onPress: () => {
+                                void openChatGptForDiagnosticUpload().catch((e) =>
+                                  Alert.alert('打开失败', (e as Error)?.message ?? String(e)),
+                                );
+                              },
+                            },
+                          ],
+                        );
+                      }}
+                    >
+                      <Text style={styles.scanDiagnosticShareBtnText}>打开 ChatGPT 上传</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[
+                      styles.scanDiagnosticShareBtn,
+                      styles.scanDiagnosticSaveFolderBtn,
+                      scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
+                    ]}
+                    disabled={scanDiagOp !== null}
+                    onPress={async () => {
+                      setScanDiagOp('folder');
+                      try {
+                        await saveScanDiagnosticFolderToChosenDirectory(scanDiagnostic.folderUri);
+                        Alert.alert('已保存', 'ZIP 已写入你选择的文件夹。');
+                      } catch (e) {
+                        Alert.alert('保存失败', (e as Error)?.message ?? String(e));
+                      } finally {
+                        setScanDiagOp(null);
+                      }
+                    }}
+                  >
+                    <Text style={styles.scanDiagnosticShareBtnText}>
+                      {scanDiagOp === 'folder' ? '正在写入…' : '保存到所选文件夹'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+              <Text style={styles.scanDiagnosticPath} selectable>
+                {scanDiagnostic.folderUri || '(no folder — see summary.reason)'}
+              </Text>
+              <Text style={styles.scanDiagnosticHint}>
+                Contains: 00_original.jpg, 01_perspective_corrected.jpg, 02_normalized_for_regions.jpg,
+                03_row_bands_overlay.jpg, row_*_cell_*_variant_*.png, summary.json — 失败时 summary 含 ok/reason。
+              </Text>
+              <ScrollView style={styles.scanDiagnosticJsonScroll} nestedScrollEnabled>
+                <Text style={styles.scanDiagnosticJson} selectable>
+                  {JSON.stringify(scanDiagnostic.summary, null, 2)}
+                </Text>
+              </ScrollView>
+            </>
+          ) : (
+            <>
+              <Text style={styles.scanDiagnosticTitle}>Powerball scan diagnostic</Text>
+              <Text style={styles.scanDiagnosticHint}>
+                {isPowerballScanDiagnosticEnabled()
+                  ? '位置没错：就在这条 Test Ad 横幅下面。若只有本段说明、没有路径与 JSON：请用手指把整页再向下拖一点（避免被底栏挡住），并确认是用「Scan ticket」扫完后 OCR 已跑完。仍无数据则 pipeline 未回调 onDiagnosticBundle。'
+                  : '诊断开关未开（release 需在 EAS production 环境配置 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1，并执行 eas update --channel production --environment production）。'}
+              </Text>
+            </>
+          )}
+        </View>
+      ) : null}
 
       <Modal visible={!!dateConfirmModal} transparent animationType="fade">
         <TouchableOpacity
@@ -1307,6 +1501,43 @@ const styles = StyleSheet.create({
   },
   imageHint: { color: COLORS.textMuted, fontSize: 12, marginTop: 8 },
   dateHintWarn: { color: COLORS.warning },
+  /** __DEV__ — remove when OCR preprocess debugging is done */
+  devPreBlock: { marginTop: 12, padding: 10, borderRadius: 8, backgroundColor: '#1a1520', borderWidth: 1, borderColor: '#7c3aed' },
+  devPreLabel: { color: '#c4b5fd', fontSize: 11, marginBottom: 8 },
+  devPreScroll: { maxHeight: 120 },
+  devPreScrollContent: { flexDirection: 'row', alignItems: 'flex-start', paddingBottom: 4, paddingRight: 8 },
+  devPreItem: { width: 88, alignItems: 'center', marginRight: 10 },
+  devPreThumb: { width: 88, height: 72, borderRadius: 6, backgroundColor: COLORS.bgElevated },
+  devPreCap: { color: COLORS.textMuted, fontSize: 9, marginTop: 4, width: '100%', textAlign: 'center' },
+  /** __DEV__ — scan diagnostic bundle; remove with BannerAdPlaceholder(check-bottom) block */
+  scanDiagnosticSection: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.bgCard,
+    borderStyle: 'dashed',
+  },
+  scanDiagnosticTitle: { color: COLORS.textMuted, fontSize: 11, fontWeight: '600', marginBottom: 8 },
+  scanDiagnosticPath: { color: COLORS.gold, fontSize: 11, marginBottom: 6 },
+  scanDiagnosticHint: { color: COLORS.textMuted, fontSize: 10, lineHeight: 15, marginBottom: 8 },
+  scanDiagnosticJsonScroll: { maxHeight: 200 },
+  scanDiagnosticJson: { color: COLORS.textSecondary, fontSize: 10, fontFamily: 'monospace' },
+  scanDiagnosticBtnRow: { width: '100%', gap: 10, marginBottom: 10 },
+  scanDiagnosticShareBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+  },
+  scanDiagnosticSaveFolderBtn: {
+    borderColor: COLORS.textSecondary,
+  },
+  scanDiagnosticShareBtnDisabled: { opacity: 0.6 },
+  scanDiagnosticShareBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600', textAlign: 'center' },
   scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
   hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
   readingOverlay: {

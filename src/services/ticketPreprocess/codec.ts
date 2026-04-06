@@ -1,6 +1,7 @@
 /**
  * JPEG load/save for preprocessing (expo-file-system/legacy + jpeg-js). Web: fetch + blob.
  */
+import './bufferPolyfill';
 import {
   cacheDirectory,
   deleteAsync,
@@ -66,7 +67,9 @@ export async function writeGrayAsJpegUri(gray: Uint8ClampedArray, width: number,
     rgba[j + 3] = 255;
   }
   const encoded = encode({ data: rgba, width, height }, quality);
-  const outBytes = new Uint8Array(encoded.data);
+  const raw = encoded.data;
+  const outBytes =
+    raw instanceof Uint8Array ? raw : new Uint8Array(raw as unknown as ArrayBufferLike);
   if (Platform.OS === 'web') {
     const blob = new Blob([outBytes], { type: 'image/jpeg' });
     return URL.createObjectURL(blob);
@@ -78,6 +81,33 @@ export async function writeGrayAsJpegUri(gray: Uint8ClampedArray, width: number,
     encoding: EncodingType.Base64,
   });
   return path;
+}
+
+/** Crop a sub-rectangle of grayscale image and write JPEG (for per-cell / per-row OCR). */
+export async function cropGrayToJpegUri(
+  gray: Uint8ClampedArray,
+  fullW: number,
+  fullH: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  quality = 90,
+): Promise<string | null> {
+  const xa = Math.max(0, Math.min(fullW, Math.min(x0, x1)));
+  const ya = Math.max(0, Math.min(fullH, Math.min(y0, y1)));
+  const xb = Math.max(0, Math.min(fullW, Math.max(x0, x1)));
+  const yb = Math.max(0, Math.min(fullH, Math.max(y0, y1)));
+  const w = xb - xa;
+  const h = yb - ya;
+  if (w < 4 || h < 4) return null;
+  const sub = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      sub[y * w + x] = gray[(ya + y) * fullW + (xa + x)];
+    }
+  }
+  return writeGrayAsJpegUri(sub, w, h, quality);
 }
 
 export async function deleteUriIfLocal(uri: string): Promise<void> {

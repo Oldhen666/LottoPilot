@@ -6,13 +6,16 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 import type { LotteryId } from '../../types/lottery';
 import { deleteUriIfLocal, readJpegUriToRgba, writeGrayAsJpegUri } from './codec';
+import { flattenDocumentGray } from './documentFlatten';
 import {
   adaptiveThreshold,
   blendRegionStronger,
   claheGray,
   gaussianBlurGray,
+  highPassSubtractBackground,
   morphOpenClose,
   rgbaToGrayscale,
+  rgbaToGrayscaleWatermarkFade,
   subtractBackground,
 } from './pixelOps';
 import { getRegionRects } from './regions';
@@ -61,8 +64,17 @@ export async function preprocessTicketImageForOcr(uri: string, lotteryId: Lotter
 
   const rgba = await readJpegUriToRgba(workUri);
   await revokeOrDelete(workUri);
-  const { width, height } = rgba;
-  const gray = rgbaToGrayscale(rgba.data, width, height);
+  let { width, height } = rgba;
+  let gray = rgbaToGrayscale(rgba.data, width, height);
+  const grayWmIn =
+    lotteryId === 'powerball' || lotteryId === 'mega_millions'
+      ? rgbaToGrayscaleWatermarkFade(rgba.data, width, height)
+      : null;
+  const flat = flattenDocumentGray(gray, grayWmIn, width, height, { includeDebug: false });
+  gray = flat.gray;
+  const grayWmFlat = flat.grayWm;
+  width = flat.width;
+  height = flat.height;
 
   const rects = getRegionRects(lotteryId);
   const claheMild = claheGray(gray, width, height, TILES, 2.0);
@@ -87,6 +99,22 @@ export async function preprocessTicketImageForOcr(uri: string, lotteryId: Lotter
 
   await push(gray, 'grayscale');
   await push(enhanced, 'clahe_regions');
+  if ((lotteryId === 'powerball' || lotteryId === 'mega_millions') && grayWmFlat) {
+    const grayWm = grayWmFlat;
+    const hp = highPassSubtractBackground(grayWm, width, height, 51, 12);
+    const wmHp = claheGray(hp, width, height, TILES, 2.2);
+    const wmBase = claheGray(grayWm, width, height, TILES, 2.65);
+    let wmBlend = blendRegionStronger(wmHp, wmBase, width, height, rects.main, 0.6);
+    wmBlend = blendRegionStronger(
+      wmBlend,
+      claheGray(grayWm, width, height, TILES, 2.85),
+      width,
+      height,
+      rects.special,
+      0.5,
+    );
+    await push(wmBlend, 'watermark_fade');
+  }
   await push(morph, 'adaptive_morph');
 
   return {
