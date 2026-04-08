@@ -11,6 +11,7 @@ expo-env.d.ts
 
 # Native
 .kotlin/
+android/app/.cxx/
 *.orig.*
 *.jks
 *.p8
@@ -40,6 +41,5 @@ logs/
 # typescript
 *.tsbuildinfo
 
-# generated native folders
+# generated native folders (android 需纳入版本控制，EAS/Play 才能与本地 Manifest 一致，含 AD_ID 等权限)
 /ios
-/android

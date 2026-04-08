@@ -1,0 +1,13 @@
+# 减小上传体积、降低 EAS Gradle OOM/超时（https://expo.fyi/eas-build-archive）
+lottery-tracker/
+electron/
+**/.next/
+**/dist/
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+**/.cxx/
+android/build/
+*.log
+logs/
+.git/

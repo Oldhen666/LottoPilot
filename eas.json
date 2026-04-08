@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 5.0.0"
+    "version": ">= 5.0.0",
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -25,6 +26,7 @@
         "buildType": "app-bundle"
       },
       "env": {
+        "NODE_ENV": "production",
         "EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC": "1"
       }
     }

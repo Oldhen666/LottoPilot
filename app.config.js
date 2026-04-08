@@ -26,7 +26,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 30,
+      versionCode: 33,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -38,9 +38,7 @@ module.exports = {
     updates: {
       url: 'https://u.expo.dev/2ae23643-f627-4cfc-9214-764502ce4849',
     },
-    runtimeVersion: {
-      policy: 'appVersion',
-    },
+    runtimeVersion: '1.0.6',
     plugins: [
       [
         'react-native-google-mobile-ads',
