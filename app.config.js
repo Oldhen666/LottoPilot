@@ -26,7 +26,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 33,
+      versionCode: 34,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
