@@ -282,10 +282,34 @@ export function flattenDocumentGray(
   grayWm: Uint8ClampedArray | null,
   w: number,
   h: number,
-  opts?: { includeDebug?: boolean },
+  opts?: { includeDebug?: boolean; skipPerspective?: boolean },
 ): DocumentFlattenResult {
   const includeDebug = opts?.includeDebug === true;
   const debugStages: DocumentFlattenDebugStage[] = [];
+
+  /**
+   * Document scanner output is already perspective-corrected. Skip hull/homography to avoid a second warp
+   * on lottery watermarks/barcodes (see product note: scheme 1).
+   */
+  if (opts?.skipPerspective === true) {
+    const skew = estimateSkewDeg(gray, w, h);
+    if (Math.abs(skew) < 0.5) {
+      return { gray, grayWm, width: w, height: h, mode: 'none', debugStages };
+    }
+    const rg = rotateGrayExpand(gray, w, h, skew);
+    const rwm = grayWm ? rotateGrayExpand(grayWm, w, h, skew) : null;
+    if (includeDebug) {
+      debugStages.push({ label: 'doc_scan_skew_only', gray: rg.gray.slice(), width: rg.width, height: rg.height });
+    }
+    return {
+      gray: rg.gray,
+      grayWm: rwm ? rwm.gray : null,
+      width: rg.width,
+      height: rg.height,
+      mode: 'skew',
+      debugStages,
+    };
+  }
 
   const det = downscaleGrayMaxWidth(gray, w, h, DET_MAX_W);
   const pts = sampleForegroundPoints(det.gray, det.w, det.h, 210, 4, 2200);

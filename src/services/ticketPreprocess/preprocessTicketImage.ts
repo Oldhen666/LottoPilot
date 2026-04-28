@@ -9,11 +9,16 @@ import { deleteUriIfLocal, readJpegUriToRgba, writeGrayAsJpegUri } from './codec
 import { flattenDocumentGray } from './documentFlatten';
 import {
   adaptiveThreshold,
+  backgroundFlattenDivideGray,
   blendRegionStronger,
+  blendLinearLightApproxGray,
   claheGray,
+  clarityContrastGray,
   gaussianBlurGray,
   highPassSubtractBackground,
+  minimumFilterGray,
   morphOpenClose,
+  percentileStretchGray,
   rgbaToGrayscale,
   rgbaToGrayscaleWatermarkFade,
   subtractBackground,
@@ -41,7 +46,11 @@ function revokeOrDelete(uri: string): Promise<void> {
   return deleteUriIfLocal(uri);
 }
 
-export async function preprocessTicketImageForOcr(uri: string, lotteryId: LotteryId): Promise<PreprocessForOcrResult> {
+export async function preprocessTicketImageForOcr(
+  uri: string,
+  lotteryId: LotteryId,
+  opts?: { fromDocumentScan?: boolean },
+): Promise<PreprocessForOcrResult> {
   const tempUris: string[] = [];
 
   const resized = await ImageManipulator.manipulateAsync(
@@ -70,19 +79,41 @@ export async function preprocessTicketImageForOcr(uri: string, lotteryId: Lotter
     lotteryId === 'powerball' || lotteryId === 'mega_millions'
       ? rgbaToGrayscaleWatermarkFade(rgba.data, width, height)
       : null;
-  const flat = flattenDocumentGray(gray, grayWmIn, width, height, { includeDebug: false });
+  const flat = flattenDocumentGray(gray, grayWmIn, width, height, {
+    includeDebug: false,
+    skipPerspective: opts?.fromDocumentScan === true,
+  });
   gray = flat.gray;
   const grayWmFlat = flat.grayWm;
   width = flat.width;
   height = flat.height;
 
   const rects = getRegionRects(lotteryId);
+
+  // Deskew-style photometry baseline (no rotation changes):
+  // background flatten (divide), gamma-like curve, CLAHE, percentile levels, min-filter + linear-light emphasis, clarity+contrast.
+  // Keep it mild and fast; apply to PB/MM only so we don't fight other ticket styles.
+  const deskewBase =
+    (lotteryId === 'powerball' || lotteryId === 'mega_millions')
+      ? backgroundFlattenDivideGray(gray, width, height, Math.max(31, ((Math.min(width, height) / 8) | 1)), 0)
+      : gray;
+
   const claheMild = claheGray(gray, width, height, TILES, 2.0);
   const claheMainStrong = claheGray(gray, width, height, TILES, 3.1);
   const claheSpec = claheGray(gray, width, height, TILES, 2.4);
 
   let enhanced = blendRegionStronger(claheMild, claheMainStrong, width, height, rects.main, 0.72);
   enhanced = blendRegionStronger(enhanced, claheSpec, width, height, rects.special, 0.48);
+
+  // Nudge CLAHE-based variant toward deskew preprocessing: add levels + mild "linear light" emphasis + clarity.
+  if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+    const x0 = claheGray(deskewBase, width, height, TILES, 2.8);
+    const x1 = percentileStretchGray(x0, 0.8, 3.0);
+    const mn = minimumFilterGray(x1, width, height, 3);
+    const x2 = blendLinearLightApproxGray(x1, mn, 0.5);
+    const x3 = clarityContrastGray(x2, width, height, { clarityAmount: 1.1, brightnessCentered: 0.06, contrastGain: 1.28 });
+    enhanced = percentileStretchGray(x3, 0.5, 1.5);
+  }
 
   const bgBlur = gaussianBlurGray(gray, width, height, 21, 6);
   const sub = subtractBackground(gray, bgBlur);

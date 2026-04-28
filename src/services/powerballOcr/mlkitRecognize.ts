@@ -10,6 +10,11 @@ const ML_KIT_MIN_DIM = 32;
  * Reliable pixel size: `Image.getSize` often fails on some `file://` / cache URIs on Android;
  * re-encoding with no transforms still returns width/height from the native pipeline.
  */
+/** Pixel size for a ticket image URI (file / content); used by crop helpers and YOLO merge. */
+export async function getTicketImagePixelSize(uri: string): Promise<{ w: number; h: number } | null> {
+  return getImagePixelDimensions(uri);
+}
+
 async function getImagePixelDimensions(uri: string): Promise<{ w: number; h: number } | null> {
   try {
     const dim = await new Promise<{ width: number; height: number }>((resolve, reject) => {

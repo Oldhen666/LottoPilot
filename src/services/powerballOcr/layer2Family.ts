@@ -30,18 +30,28 @@ function countProjectionPeaks(proj: Float32Array, minRatio = 0.35): number {
 /**
  * Classify layout family without relying on state name OCR.
  * `quickOcrText` is optional first-pass text for QP / PB keywords.
+ * `jurisdictionCode` disambiguates CA/WA slips from FL-like texture heuristics (see stdMid branch).
  */
 export function classifyPbTemplateFamily(
   gray: Uint8ClampedArray,
   width: number,
   height: number,
   quickOcrText?: string,
+  jurisdictionCode?: string,
 ): PbTemplateFamily {
   const t = (quickOcrText ?? '').replace(/\s+/g, ' ');
   const qpMatches = t.match(/\bQP\b/gi);
   const qpCount = qpMatches?.length ?? 0;
   if (qpCount >= 2) {
     return 'ny_il_nj';
+  }
+
+  if (jurisdictionCode === 'US-CA' || jurisdictionCode === 'US-WA') {
+    return 'ca_wa';
+  }
+
+  if (/\bcalifornia\s+lottery\b/i.test(t) || /\bcalotter/i.test(t)) {
+    return 'ca_wa';
   }
 
   const xR0 = Math.floor(width * 0.72);

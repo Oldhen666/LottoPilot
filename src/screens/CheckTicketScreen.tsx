@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,8 +11,10 @@ import {
   Image,
   Platform,
   BackHandler,
+  ToastAndroid,
   Modal,
   Dimensions,
+  Share,
   RefreshControl,
   InteractionManager,
 } from 'react-native';
@@ -29,13 +31,7 @@ import { insertRecord, getRecordById } from '../db/sqlite';
 import { computePrize } from '../engine/prizeEngine';
 import { computeAddOnResults } from '../engine/addOnEngine';
 import { fetchAddOnCatalog, isUserSelectableAddOn } from '../services/addOnCatalog';
-import { parseTicketFromImage, type TicketScanDiagnosticBundleInfo } from '../services/ocr';
-import { isPowerballScanDiagnosticEnabled } from '../config/scanDiagnostic';
-import {
-  openChatGptForDiagnosticUpload,
-  saveScanDiagnosticFolderToChosenDirectory,
-  shareScanDiagnosticFolderAsZip,
-} from '../services/powerballOcr/scanDiagnosticZip';
+import { parseTicketFromImage } from '../services/ocr';
 import { deleteDebugVariantUris } from '../services/ticketPreprocess/debugCopy';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
@@ -48,6 +44,9 @@ import type { CurrentJurisdiction } from '../types/jurisdiction';
 import type { AddOnCatalogItem, AddOnsSelected, AddOnsInputs } from '../types/addOn';
 
 const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+const MIN_FLEX_LINES = 3;
+const MAX_UI_LINES = 10;
+const MAX_OCR_PLAYS_PB_MM = MAX_UI_LINES;
 
 /** Check UI: hide multipliers (prize-only); does not affect match logic */
 const HIDDEN_ADD_ON_CODES = new Set<string>(['POWER_PLAY', 'DOUBLE_PLAY', 'MEGA_MULTIPLIER']);
@@ -99,11 +98,16 @@ export default function CheckTicketScreen({
   /** Powerball / Mega Millions: one Powerball or Mega Ball per play line (matches physical tickets). */
   const [specialByLine, setSpecialByLine] = useState<string[]>([]);
   const [allSets, setAllSets] = useState<number[][]>([]);
+  /** UI: how many lines to show (default 3, user can add up to 10). */
+  const [uiLines, setUiLines] = useState<number>(MIN_FLEX_LINES);
+  /** OCR may detect >10 lines; we cap at 10 and show a hint. */
+  const [ocrExtraLinesCount, setOcrExtraLinesCount] = useState<number>(0);
   const [selectedDraw, setSelectedDraw] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] } | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [ocrDateDetected, setOcrDateDetected] = useState(false);
   const [dateStatusMsg, setDateStatusMsg] = useState<string | null>(null);
   const [dateConfirmModal, setDateConfirmModal] = useState<{ candidates: string[]; rawText: string } | null>(null);
+  const [ocrBestVariant, setOcrBestVariant] = useState<{ label: string; uri: string; score: number } | null>(null);
   const [extraDraws, setExtraDraws] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] }[]>([]);
   const [addOnCatalog, setAddOnCatalog] = useState<AddOnCatalogItem[]>([]);
   const [addOnsSelected, setAddOnsSelected] = useState<AddOnsSelected>({});
@@ -117,14 +121,15 @@ export default function CheckTicketScreen({
   const [ocrReading, setOcrReading] = useState(false);
   /** __DEV__ only: copied preprocess variant URIs for debugging (remove UI when done). */
   const [devPreprocessDebug, setDevPreprocessDebug] = useState<{ uris: string[]; labels: string[] } | null>(null);
-  /** Powerball scan diagnostic bundle path + summary (remove block with banner ad section when done). */
-  const [scanDiagnostic, setScanDiagnostic] = useState<TicketScanDiagnosticBundleInfo | null>(null);
-  const [scanDiagOp, setScanDiagOp] = useState<null | 'share' | 'folder'>(null);
+  const [devPreViewer, setDevPreViewer] = useState<{ uri: string; label: string } | null>(null);
+  const handleCheckRef = useRef<() => Promise<void>>(async () => {});
   const { draws, loading } = useDraws(lotteryId, refetchTrigger);
+
+  // We do not require user to select a purchase region. Prefer GPS/known jurisdictionCode, else fall back.
+  const effectiveJurisdictionCode = jurisdictionCode ?? 'NATIONAL';
+  const prizeJurisdictionCode = jurisdictionCode ?? 'NATIONAL';
+
   const def = LOTTERY_DEFS[lotteryId];
-  /** 开发包默认可用；release 需 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1（见 app.config extra） */
-  const showPbDiagnosticUi =
-    isPowerballScanDiagnosticEnabled() && lotteryId === 'powerball' && Platform.OS !== 'web';
   const rawDrawsList = [...draws, ...extraDraws.filter((e) => !draws.some((d) => d.draw_date === e.draw_date))];
   const drawsList = lotteryId === 'powerball'
     ? rawDrawsList.filter((d) => isValidDrawDate(d.draw_date, 'powerball'))
@@ -166,17 +171,6 @@ export default function CheckTicketScreen({
     reportScanCoachRect();
   }, [reportScanCoachRect, lotteryId]);
 
-  /** 诊断区在 ScrollView 最底部（广告下方），出现后滚到底避免被底栏挡住 */
-  useEffect(() => {
-    if (!showPbDiagnosticUi) return;
-    const task = InteractionManager.runAfterInteractions(() => {
-      setTimeout(() => {
-        checkScrollRef.current?.scrollToEnd({ animated: true });
-      }, 120);
-    });
-    return () => task.cancel?.();
-  }, [scanDiagnostic, showPbDiagnosticUi]);
-
   useEffect(() => {
     setLotteryId(preselectedLottery);
   }, [preselectedLottery]);
@@ -192,17 +186,29 @@ export default function CheckTicketScreen({
     setAddOnsSelected({});
     setAddOnsInputs({});
     setSpecialInput('');
+    setOcrExtraLinesCount(0);
     const def = LOTTERY_DEFS[lotteryId];
     const cnt = def?.main_count ?? 7;
-    const plays = def?.plays_per_ticket ?? 1;
+    const plays = MIN_FLEX_LINES;
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
+    setUiLines(plays);
     if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
       setSpecialByLine(Array.from({ length: plays }, () => ''));
     } else {
       setSpecialByLine([]);
     }
   }, [lotteryId, initialRecordId]);
+
+  // Keep PB/MM specialByLine aligned with current UI line count.
+  useEffect(() => {
+    if (lotteryId !== 'powerball' && lotteryId !== 'mega_millions') return;
+    setSpecialByLine((prev) => {
+      const next = [...prev];
+      while (next.length < uiLines) next.push('');
+      return next;
+    });
+  }, [lotteryId, uiLines]);
 
   /** Clear OCR-filled numbers and add-ons when user removes the preview image. */
   const clearScannedReadings = useCallback(() => {
@@ -212,12 +218,13 @@ export default function CheckTicketScreen({
       }
       return null;
     });
-    setScanDiagnostic(null);
     const d = LOTTERY_DEFS[lotteryId];
     const cnt = d?.main_count ?? 7;
-    const plays = d?.plays_per_ticket ?? 1;
+    const plays = MIN_FLEX_LINES;
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
+    setUiLines(plays);
+    setOcrExtraLinesCount(0);
     setSpecialInput('');
     if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
       setSpecialByLine(Array.from({ length: plays }, () => ''));
@@ -226,12 +233,13 @@ export default function CheckTicketScreen({
     }
     setAddOnsSelected({});
     setAddOnsInputs({});
+    setOcrRawText(null);
+    setShowOcrLog(false);
   }, [lotteryId]);
 
   useEffect(() => {
-    const jCode = jurisdictionCode ?? 'CA-ON';
-    fetchAddOnCatalog(lotteryId, jCode).then(setAddOnCatalog);
-  }, [lotteryId, jurisdictionCode]);
+    fetchAddOnCatalog(lotteryId, effectiveJurisdictionCode).then(setAddOnCatalog);
+  }, [lotteryId, effectiveJurisdictionCode]);
 
   useEffect(() => {
     if (!initialRecordId) return;
@@ -294,10 +302,28 @@ export default function CheckTicketScreen({
     }
   }, [draws, extraDraws, initialRecordId, selectedDraw]);
 
+  const scanInFlightRef = useRef(false);
+  const swallowBackUntilRef = useRef(0);
+  const lastBackPressAtRef = useRef(0);
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      onBack();
+      // Some native screens (e.g. document scanner) may trigger a back event when closing.
+      // If we are in the middle of an external scan/processing, swallow it to avoid
+      // unexpectedly popping back to Home.
+      const now = Date.now();
+      if (scanInFlightRef.current) return true;
+      if (swallowBackUntilRef.current && now < swallowBackUntilRef.current) return true;
+      // Prevent accidental back fired by native scanner close. Require double-press to exit this screen.
+      const DOUBLE_PRESS_MS = 1200;
+      if (now - lastBackPressAtRef.current < DOUBLE_PRESS_MS) {
+        lastBackPressAtRef.current = 0;
+        onBack();
+        return true;
+      }
+      lastBackPressAtRef.current = now;
+      ToastAndroid.show('再按一次返回键回到主页', ToastAndroid.SHORT);
       return true;
     });
     return () => sub.remove();
@@ -440,12 +466,11 @@ export default function CheckTicketScreen({
         jackpot_amount: sel.jackpot_amount,
         multiplier_value: lotteryId === 'powerball' ? sel.power_play_multiplier : lotteryId === 'mega_millions' ? sel.mega_multiplier : sel.multiplier_value,
       };
-      const jCode = jurisdictionCode ?? 'NATIONAL';
       const prizeResults = await Promise.all(
         mainPlays.map((play, i) =>
           computePrize(
             lotteryId,
-            jCode,
+            prizeJurisdictionCode,
             drawWithPrize,
             play,
             userSpecialPerLine[i]?.length ? userSpecialPerLine[i] : undefined,
@@ -523,7 +548,7 @@ export default function CheckTicketScreen({
         match_count_special: result.match_count_special,
         result_bucket: result.result_bucket,
         source: imageUri ? 'photo' : 'manual',
-        jurisdiction_code: jurisdictionCode ?? undefined,
+        jurisdiction_code: prizeJurisdictionCode,
         add_ons_selected_json: hasAddOns ? addOnsSelected : undefined,
         add_ons_inputs_json: hasAddOnInputs ? addOnsToSave : undefined,
         result_json: {
@@ -554,13 +579,60 @@ export default function CheckTicketScreen({
     }
   };
 
-  const processImageUri = async (uri: string) => {
+  handleCheckRef.current = handleCheck;
+
+  const runDocumentScan = async () => {
+    if (Platform.OS === 'web') return;
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Camera access is needed to scan tickets.');
+      return;
+    }
+    try {
+      scanInFlightRef.current = true;
+      swallowBackUntilRef.current = 0;
+      const DocumentScanner = require('react-native-document-scanner-plugin').default;
+      const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
+        maxNumDocuments: 1,
+      });
+      if (scanStatus === 'cancel' || !scannedImages?.length) return;
+      const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
+      await processImageUri(uri, { fromDocumentScan: true });
+    } catch (e) {
+      Alert.alert('Scan failed', (e as Error)?.message || 'Document scanner is not available.');
+    } finally {
+      scanInFlightRef.current = false;
+      // Some devices dispatch the back event *after* the scanner closes (or after returning to app).
+      // Swallow for a short window so "Next" doesn't accidentally pop to Home.
+      swallowBackUntilRef.current = Date.now() + 2000;
+    }
+  };
+
+  const runPickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Photo library access is needed to select ticket images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    await processImageUri(result.assets[0].uri);
+  };
+
+  const processImageUri = async (uri: string, sourceOpts?: { fromDocumentScan?: boolean }) => {
     setOcrReading(true);
     try {
       setImageUri(uri);
 
       const def = LOTTERY_DEFS[lotteryId];
-    const jCode = jurisdictionCode ?? 'CA-ON';
+    const playsPerTicketForOcr =
+      lotteryId === 'powerball' || lotteryId === 'mega_millions'
+        ? Math.max(def?.plays_per_ticket ?? 1, MAX_OCR_PLAYS_PB_MM)
+        : (def?.plays_per_ticket ?? 1);
     const parsed = await parseTicketFromImage(uri, def ? {
       mainCount: def.main_count,
       mainMax: def.main_max,
@@ -568,8 +640,9 @@ export default function CheckTicketScreen({
       specialMax: def.special_max ?? 49,
       specialCount: def.special_count ?? 1,
       lotteryId,
-      jurisdictionCode: jCode,
-      playsPerTicket: def.plays_per_ticket,
+      jurisdictionCode: effectiveJurisdictionCode,
+      playsPerTicket: playsPerTicketForOcr,
+      imageSource: sourceOpts?.fromDocumentScan ? 'document_scan' : 'default',
       ...(__DEV__
         ? {
             debugPreprocessPreview: (info: { uris: string[]; labels: string[] }) => {
@@ -582,22 +655,39 @@ export default function CheckTicketScreen({
             },
           }
         : {}),
-      ...(showPbDiagnosticUi
-        ? {
-            diagnosticBundle: true,
-            onDiagnosticBundle: (info: TicketScanDiagnosticBundleInfo) => {
-              setScanDiagnostic(info);
-            },
-          }
-        : {}),
     } : undefined);
+
+    setOcrRawText(parsed?.rawText ?? null);
+    setOcrBestVariant(__DEV__ ? (parsed as any)?.debugOcrVariant ?? null : null);
+    if (__DEV__ && parsed?.rawText) {
+      console.log('--- CheckTicket OCR rawText（可全选复制）---\n', parsed.rawText, '\n--- end rawText ---');
+    }
+    if (__DEV__ && parsed?.allSets?.length) {
+      console.log('[CheckTicket] parsed allSets=%d specialsPerLine=%d', parsed.allSets.length, parsed.specialsPerLine?.length ?? 0);
+    }
+
     if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
+      setOcrExtraLinesCount(0);
       if (parsed.allSets?.length) {
-        setAllSets(parsed.allSets);
+        const cnt = def?.main_count ?? 7;
+        const detected = parsed.allSets.length;
+        const targetLines = Math.min(MAX_UI_LINES, Math.max(MIN_FLEX_LINES, detected));
+        if (detected > targetLines) setOcrExtraLinesCount(detected - targetLines);
+        setUiLines(targetLines);
+        const padded = parsed.allSets
+          .slice(0, targetLines)
+          .map((s) => [...s, ...Array(Math.max(0, cnt - s.length)).fill(0)].slice(0, cnt));
+        while (padded.length < targetLines) padded.push(Array(cnt).fill(0));
+        setAllSets(padded);
       } else {
-        setAllSets([parsed!.mainNumbers]);
+        const cnt = def?.main_count ?? 7;
+        const one = [...parsed!.mainNumbers, ...Array(Math.max(0, cnt - parsed!.mainNumbers.length)).fill(0)].slice(0, cnt);
+        const padded = [one];
+        while (padded.length < MIN_FLEX_LINES) padded.push(Array(cnt).fill(0));
+        setUiLines(MIN_FLEX_LINES);
+        setAllSets(padded);
       }
-      const plays = def?.plays_per_ticket ?? 1;
+      const plays = Math.min(MAX_UI_LINES, Math.max(MIN_FLEX_LINES, uiLines, parsed.allSets?.length ?? 0));
       if (
         parsed.specialsPerLine?.length &&
         (lotteryId === 'powerball' || lotteryId === 'mega_millions')
@@ -619,7 +709,7 @@ export default function CheckTicketScreen({
         setSpecialByLine(Array.from({ length: plays }, () => ''));
       }
       if (parsed.addOnsDetected) {
-        const catalog = addOnCatalog.length > 0 ? addOnCatalog : await fetchAddOnCatalog(lotteryId, jCode);
+        const catalog = addOnCatalog.length > 0 ? addOnCatalog : await fetchAddOnCatalog(lotteryId, effectiveJurisdictionCode);
         const selectable = catalog.filter(isUserSelectableAddOn).map((i) => i.add_on_code);
         const newSelected: AddOnsSelected = {};
         const newInputs: AddOnsInputs = {};
@@ -726,37 +816,11 @@ export default function CheckTicketScreen({
 
   const scanDocument = async () => {
     if (Platform.OS === 'web') return;
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Camera access is needed to scan tickets.');
-      return;
-    }
-    try {
-      const DocumentScanner = require('react-native-document-scanner-plugin').default;
-      const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
-        maxNumDocuments: 1,
-      });
-      if (scanStatus === 'cancel' || !scannedImages?.length) return;
-      const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
-      await processImageUri(uri);
-    } catch (e) {
-      Alert.alert('Scan failed', (e as Error)?.message || 'Document scanner is not available.');
-    }
+    await runDocumentScan();
   };
 
   const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Photo library access is needed to select ticket images.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
-    });
-    if (result.canceled || !result.assets?.[0]) return;
-    await processImageUri(result.assets[0].uri);
+    await runPickImage();
   };
 
   const handleDateConfirm = async (dateISO: string) => {
@@ -800,11 +864,7 @@ export default function CheckTicketScreen({
         styles.content,
         {
           paddingTop: insets.top + SPACING.screenPadding,
-          /** 底栏 Tab 会盖住 ScrollView 末尾；诊断区在广告下方，需额外留白才能滚到底看见 */
-          paddingBottom:
-            SPACING.screenPaddingBottom +
-            insets.bottom +
-            (showPbDiagnosticUi ? SPACING.tabBarHeight + 24 : 0),
+          paddingBottom: SPACING.screenPaddingBottom + insets.bottom,
         },
       ]}
       refreshControl={
@@ -907,14 +967,15 @@ export default function CheckTicketScreen({
           <View style={styles.readingCard}>
             <ActivityIndicator size="large" color={COLORS.gold} />
             <Text style={styles.readingTitle}>Reading ticket…</Text>
-            <Text style={styles.readingSubtitle}>Recognizing numbers and date</Text>
+            <Text style={styles.readingSubtitle}>DYE 1.0 — flatten, OCR, digit cleanup</Text>
           </View>
         </View>
       </Modal>
 
       {jurisdiction && (
         <Text style={styles.jurisdictionHint}>
-          Prize rules: {jurisdiction.regionName || jurisdiction.regionCode}, {jurisdiction.country === 'CA' ? 'Canada' : 'USA'}
+          Your location (GPS/settings): {jurisdiction.regionName || jurisdiction.regionCode},{' '}
+          {jurisdiction.country === 'CA' ? 'Canada' : 'USA'}
         </Text>
       )}
 
@@ -960,6 +1021,11 @@ export default function CheckTicketScreen({
       {Platform.OS !== 'web' && (
         <Text style={styles.scanHint}>Use "Scan ticket" for angled photos — it flattens the image for better date/number recognition.</Text>
       )}
+      {(lotteryId === 'powerball' || lotteryId === 'mega_millions') && (
+        <Text style={styles.scanHint}>
+          PB/MM 最多自动识别 {MAX_UI_LINES} 行；如果票面超过 {MAX_UI_LINES} 行，请在下方点 “+” 增加行并手动补齐超出的部分。
+        </Text>
+      )}
 
       <BannerAdPlaceholder testId="scan" userPlan={plan} />
 
@@ -999,6 +1065,50 @@ export default function CheckTicketScreen({
               <Text style={styles.devPreLabel}>
                 DEV: OCR 预处理变体（调试用，发布前删掉本段 UI）
               </Text>
+              <Modal
+                visible={!!devPreViewer}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setDevPreViewer(null)}
+              >
+                <View style={styles.devViewerOverlay}>
+                  <View style={styles.devViewerCard}>
+                    <View style={styles.devViewerHeader}>
+                      <Text style={styles.devViewerTitle} numberOfLines={1}>
+                        {devPreViewer?.label ?? 'preview'}
+                      </Text>
+                      <TouchableOpacity onPress={() => setDevPreViewer(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.devViewerImgWrap}>
+                      <Image source={{ uri: devPreViewer?.uri }} style={styles.devViewerImg} resizeMode="contain" />
+                    </View>
+                    <Text selectable style={styles.devViewerUri} numberOfLines={2}>
+                      {devPreViewer?.uri ?? ''}
+                    </Text>
+                    <View style={styles.devViewerActions}>
+                      <TouchableOpacity
+                        style={styles.devViewerBtn}
+                        onPress={async () => {
+                          if (!devPreViewer?.uri) return;
+                          try {
+                            await Share.share({ message: devPreViewer.uri, url: devPreViewer.uri });
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                      >
+                        <Ionicons name="share-outline" size={18} color={COLORS.text} />
+                        <Text style={styles.devViewerBtnText}>Share / Save</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.devViewerBtn, styles.devViewerBtnSecondary]} onPress={() => setDevPreViewer(null)}>
+                        <Text style={styles.devViewerBtnText}>Close</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator
@@ -1007,13 +1117,44 @@ export default function CheckTicketScreen({
               >
                 {devPreprocessDebug.uris.map((u, i) => (
                   <View key={`${u}-${i}`} style={styles.devPreItem}>
-                    <Image source={{ uri: u }} style={styles.devPreThumb} resizeMode="contain" />
+                    <TouchableOpacity
+                      onPress={() =>
+                        setDevPreViewer({
+                          uri: u,
+                          label: devPreprocessDebug.labels[i] ?? `v${i}`,
+                        })
+                      }
+                      activeOpacity={0.85}
+                    >
+                      <Image source={{ uri: u }} style={styles.devPreThumb} resizeMode="contain" />
+                    </TouchableOpacity>
                     <Text style={styles.devPreCap} numberOfLines={1}>
                       {devPreprocessDebug.labels[i] ?? `v${i}`}
                     </Text>
                   </View>
                 ))}
               </ScrollView>
+            </View>
+          ) : null}
+          {__DEV__ && Platform.OS !== 'web' && ocrRawText ? (
+            <View style={styles.devOcrRawBlock}>
+              <TouchableOpacity
+                onPress={() => setShowOcrLog((v) => !v)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.devPreLabel}>
+                  DEV: OCR 原文 rawText（点按展开/收起，长按文字可选中复制；Metro 终端也有完整输出）
+                  {ocrBestVariant?.label ? `\nvariant: ${ocrBestVariant.label}` : ''}
+                  {ocrBestVariant?.uri ? `\nuri: ${ocrBestVariant.uri}` : ''}
+                </Text>
+              </TouchableOpacity>
+              {showOcrLog ? (
+                <ScrollView style={styles.devOcrRawScroll} nestedScrollEnabled>
+                  <Text selectable style={styles.devOcrRawText}>
+                    {ocrRawText}
+                  </Text>
+                </ScrollView>
+              ) : null}
             </View>
           ) : null}
         </View>
@@ -1026,12 +1167,17 @@ export default function CheckTicketScreen({
       >
         <Text style={styles.label}>
           {(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? 'White balls ' : ''}{def.main_count} numbers ({def.main_min}-{def.main_max}, ascending, unique)
-          {(def?.plays_per_ticket ?? 1) > 1 ? ` · ${def?.plays_per_ticket ?? 1} lines` : ''}
+          {(uiLines ?? 1) > 1 ? ` · ${uiLines} lines` : ''}
           {(lotteryId === 'powerball' || lotteryId === 'mega_millions') &&
             ` · last box: ${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} (${def.special_min}–${def.special_max})`}
         </Text>
       </View>
-      {Array.from({ length: def?.plays_per_ticket ?? 1 }, (_, i) => i).map((lineIdx) => {
+      {ocrExtraLinesCount > 0 && (
+        <Text style={styles.hint}>
+          OCR 识别到 {ocrExtraLinesCount} 行超出上限（已截断到 {MAX_UI_LINES} 行）。你可以点下方 “+” 增加行并手动填入。
+        </Text>
+      )}
+      {Array.from({ length: uiLines }, (_, i) => i).map((lineIdx) => {
         const row = (allSets[lineIdx] ?? Array(def.main_count).fill(0)).slice(0, def.main_count);
         const values = row.map((n) => (n > 0 ? String(n) : ''));
         const paddedValues = values.length >= def.main_count ? values : [...values, ...Array(def.main_count - values.length).fill('')];
@@ -1055,8 +1201,11 @@ export default function CheckTicketScreen({
               });
               const result = [...padded, ...Array(Math.max(0, def.main_count - padded.length)).fill(0)].slice(0, def.main_count) as number[];
               setAllSets((prev) => {
-                const plays = def?.plays_per_ticket ?? 1;
-                const next = prev.length >= plays ? [...prev] : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
+                const plays = uiLines;
+                const next =
+                  prev.length >= plays
+                    ? [...prev]
+                    : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
                 const copy = next.map((s) => [...s]);
                 copy[lineIdx] = result;
                 return copy;
@@ -1084,7 +1233,7 @@ export default function CheckTicketScreen({
                     onChangeText={(t) => {
                       const digits = t.replace(/\D/g, '').slice(0, String(def.special_max).length);
                       setSpecialByLine((prev) => {
-                        const plays = def?.plays_per_ticket ?? 1;
+                        const plays = uiLines;
                         const next = [...prev];
                         while (next.length < plays) next.push('');
                         next[lineIdx] = digits;
@@ -1104,6 +1253,32 @@ export default function CheckTicketScreen({
           </View>
         );
       })}
+      {(lotteryId === 'powerball' || lotteryId === 'mega_millions') && uiLines < MAX_UI_LINES && (
+        <TouchableOpacity
+          style={styles.addLineBtn}
+          onPress={() => {
+            setUiLines((prev) => {
+              const nextLines = Math.min(MAX_UI_LINES, prev + 1);
+              if (nextLines === prev) return prev;
+              const cnt = def.main_count;
+              setAllSets((cur) => {
+                const next = [...cur];
+                while (next.length < nextLines) next.push(Array(cnt).fill(0));
+                return next;
+              });
+              setSpecialByLine((cur) => {
+                const next = [...cur];
+                while (next.length < nextLines) next.push('');
+                return next;
+              });
+              return nextLines;
+            });
+          }}
+        >
+          <Ionicons name="add" size={18} color={COLORS.gold} />
+          <Text style={styles.addLineText}>Add a line</Text>
+        </TouchableOpacity>
+      )}
 
       {def.special_count > 0 && !['lotto_max', 'lotto_649'].includes(lotteryId) && (
         <>
@@ -1189,115 +1364,6 @@ export default function CheckTicketScreen({
       </TouchableOpacity>
 
       <BannerAdPlaceholder testId="check-bottom" userPlan={plan} />
-
-      {showPbDiagnosticUi ? (
-        <View style={styles.scanDiagnosticSection}>
-          {scanDiagnostic ? (
-            <>
-              <Text style={styles.scanDiagnosticTitle}>Scan diagnostic bundle (remove this block later)</Text>
-              <Text style={styles.scanDiagnosticHint}>
-                下面 file:// 为应用私有目录。发给 ChatGPT：先「保存到所选文件夹」把 ZIP
-                存到下载/文件，再点「打开 ChatGPT」在网页里用 📎 上传（若不支持 ZIP 可解压后上传图片）。iPhone
-                也可「分享诊断 ZIP」直接发到文件或其它 App。Android 系统分享无法附带 ZIP，请用保存 + 打开网页。
-              </Text>
-              {scanDiagnostic.folderUri && scanDiagnostic.folderUri.startsWith('file') ? (
-                <View style={styles.scanDiagnosticBtnRow}>
-                  {Platform.OS === 'ios' ? (
-                    <TouchableOpacity
-                      style={[
-                        styles.scanDiagnosticShareBtn,
-                        scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
-                      ]}
-                      disabled={scanDiagOp !== null}
-                      onPress={async () => {
-                        setScanDiagOp('share');
-                        try {
-                          await shareScanDiagnosticFolderAsZip(scanDiagnostic.folderUri);
-                        } catch (e) {
-                          Alert.alert('导出失败', (e as Error)?.message ?? String(e));
-                        } finally {
-                          setScanDiagOp(null);
-                        }
-                      }}
-                    >
-                      <Text style={styles.scanDiagnosticShareBtnText}>
-                        {scanDiagOp === 'share' ? '正在打包…' : '分享诊断 ZIP'}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[styles.scanDiagnosticShareBtn, styles.scanDiagnosticSaveFolderBtn]}
-                      onPress={() => {
-                        Alert.alert(
-                          '给 ChatGPT 发诊断包',
-                          '1）先点「保存到所选文件夹」，把 ZIP 存到手机（如「下载」）。\n2）再点「打开 ChatGPT」，在对话里点 📎 选择该 ZIP。\n\n若网页版不支持 ZIP，请用文件管理器解压后上传里面的 JPG/PNG。',
-                          [
-                            { text: '取消', style: 'cancel' },
-                            {
-                              text: '打开 ChatGPT',
-                              onPress: () => {
-                                void openChatGptForDiagnosticUpload().catch((e) =>
-                                  Alert.alert('打开失败', (e as Error)?.message ?? String(e)),
-                                );
-                              },
-                            },
-                          ],
-                        );
-                      }}
-                    >
-                      <Text style={styles.scanDiagnosticShareBtnText}>打开 ChatGPT 上传</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    style={[
-                      styles.scanDiagnosticShareBtn,
-                      styles.scanDiagnosticSaveFolderBtn,
-                      scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
-                    ]}
-                    disabled={scanDiagOp !== null}
-                    onPress={async () => {
-                      setScanDiagOp('folder');
-                      try {
-                        await saveScanDiagnosticFolderToChosenDirectory(scanDiagnostic.folderUri);
-                        Alert.alert('已保存', 'ZIP 已写入你选择的文件夹。');
-                      } catch (e) {
-                        Alert.alert('保存失败', (e as Error)?.message ?? String(e));
-                      } finally {
-                        setScanDiagOp(null);
-                      }
-                    }}
-                  >
-                    <Text style={styles.scanDiagnosticShareBtnText}>
-                      {scanDiagOp === 'folder' ? '正在写入…' : '保存到所选文件夹'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-              <Text style={styles.scanDiagnosticPath} selectable>
-                {scanDiagnostic.folderUri || '(no folder — see summary.reason)'}
-              </Text>
-              <Text style={styles.scanDiagnosticHint}>
-                Contains: 00_original.jpg, 01_perspective_corrected.jpg, 02_normalized_for_regions.jpg,
-                03_row_bands_overlay.jpg, row_*_cell_*_variant_*.png, summary.json — 失败时 summary 含 ok/reason。
-              </Text>
-              <ScrollView style={styles.scanDiagnosticJsonScroll} nestedScrollEnabled>
-                <Text style={styles.scanDiagnosticJson} selectable>
-                  {JSON.stringify(scanDiagnostic.summary, null, 2)}
-                </Text>
-              </ScrollView>
-            </>
-          ) : (
-            <>
-              <Text style={styles.scanDiagnosticTitle}>Powerball scan diagnostic</Text>
-              <Text style={styles.scanDiagnosticHint}>
-                {isPowerballScanDiagnosticEnabled()
-                  ? '位置没错：就在这条 Test Ad 横幅下面。若只有本段说明、没有路径与 JSON：请用手指把整页再向下拖一点（避免被底栏挡住），并确认是用「Scan ticket」扫完后 OCR 已跑完。仍无数据则 pipeline 未回调 onDiagnosticBundle。'
-                  : '诊断开关未开（release 需在 EAS production 环境配置 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1，并执行 eas update --channel production --environment production）。'}
-              </Text>
-            </>
-          )}
-        </View>
-      ) : null}
 
       <Modal visible={!!dateConfirmModal} transparent animationType="fade">
         <TouchableOpacity
@@ -1509,37 +1575,64 @@ const styles = StyleSheet.create({
   devPreItem: { width: 88, alignItems: 'center', marginRight: 10 },
   devPreThumb: { width: 88, height: 72, borderRadius: 6, backgroundColor: COLORS.bgElevated },
   devPreCap: { color: COLORS.textMuted, fontSize: 9, marginTop: 4, width: '100%', textAlign: 'center' },
-  /** __DEV__ — scan diagnostic bundle; remove with BannerAdPlaceholder(check-bottom) block */
-  scanDiagnosticSection: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: COLORS.bgElevated,
-    borderWidth: 1,
-    borderColor: COLORS.bgCard,
-    borderStyle: 'dashed',
+  devViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 14,
   },
-  scanDiagnosticTitle: { color: COLORS.textMuted, fontSize: 11, fontWeight: '600', marginBottom: 8 },
-  scanDiagnosticPath: { color: COLORS.gold, fontSize: 11, marginBottom: 6 },
-  scanDiagnosticHint: { color: COLORS.textMuted, fontSize: 10, lineHeight: 15, marginBottom: 8 },
-  scanDiagnosticJsonScroll: { maxHeight: 200 },
-  scanDiagnosticJson: { color: COLORS.textSecondary, fontSize: 10, fontFamily: 'monospace' },
-  scanDiagnosticBtnRow: { width: '100%', gap: 10, marginBottom: 10 },
-  scanDiagnosticShareBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  devViewerCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 14,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.bgElevated,
+    padding: 12,
+  },
+  devViewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  devViewerTitle: { color: COLORS.text, fontSize: 14, fontWeight: '700', flex: 1, marginRight: 10 },
+  devViewerImgWrap: { width: '100%', height: 420, borderRadius: 10, overflow: 'hidden', backgroundColor: COLORS.bgElevated },
+  devViewerImg: { width: '100%', height: '100%' },
+  devViewerUri: { marginTop: 10, color: COLORS.textMuted, fontSize: 10 },
+  devViewerActions: { flexDirection: 'row', gap: 10, marginTop: 12, justifyContent: 'flex-end', alignItems: 'center' },
+  devViewerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary,
+  },
+  devViewerBtnSecondary: { backgroundColor: COLORS.bgElevated },
+  devViewerBtnText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
+  devOcrRawBlock: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: '#0f1729',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+  },
+  devOcrRawScroll: { maxHeight: 220, marginTop: 6 },
+  devOcrRawText: { color: COLORS.textSecondary, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
+  hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
+  addLineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
     borderRadius: 10,
     backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: COLORS.gold,
+    borderColor: COLORS.bgElevated,
+    marginBottom: 18,
   },
-  scanDiagnosticSaveFolderBtn: {
-    borderColor: COLORS.textSecondary,
-  },
-  scanDiagnosticShareBtnDisabled: { opacity: 0.6 },
-  scanDiagnosticShareBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600', textAlign: 'center' },
-  scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
-  hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
+  addLineText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
   readingOverlay: {
     flex: 1,
     backgroundColor: 'rgba(5,8,15,0.72)',

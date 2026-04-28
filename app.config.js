@@ -26,7 +26,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 34,
+      versionCode: 35,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -61,8 +61,6 @@ module.exports = {
       eas: {
         projectId: '2ae23643-f627-4cfc-9214-764502ce4849',
       },
-      /** 与 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1 同步，供 release 包读取 */
-      powerballScanDiagnostic: process.env.EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC === '1',
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
       authCallbackUrl: process.env.EXPO_PUBLIC_AUTH_CALLBACK_URL || '',

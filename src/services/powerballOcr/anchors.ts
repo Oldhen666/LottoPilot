@@ -18,6 +18,8 @@ export function collectAnchorHintsFromText(text: string): PbAnchorHints {
 export function layoutZonesForFamily(
   family: PbTemplateFamily,
   hints: PbAnchorHints,
+  /** When set with `ca_wa`, tightens vertical play band for printed CA/WA slips (less header/footer). */
+  jurisdictionCode?: string,
 ): { rowZone: NormRect; mainZone: NormRect; pbZone: NormRect } {
   let mainX0 = 0.02;
   const mainX1 = 0.72;
@@ -34,7 +36,14 @@ export function layoutZonesForFamily(
     pbX0 = 0.73;
   }
 
-  const rowZone: NormRect = { x0: 0.02, y0: 0.14, x1: 0.99, y1: 0.88 };
+  let rowZone: NormRect = { x0: 0.02, y0: 0.14, x1: 0.99, y1: 0.88 };
+  if (
+    family === 'ca_wa' &&
+    jurisdictionCode != null &&
+    (jurisdictionCode === 'US-CA' || jurisdictionCode === 'US-WA')
+  ) {
+    rowZone = { x0: 0.02, y0: 0.165, x1: 0.99, y1: 0.855 };
+  }
   const mainZone: NormRect = { x0: mainX0, y0: rowZone.y0, x1: mainX1, y1: rowZone.y1 };
   const pbZone: NormRect = { x0: pbX0, y0: rowZone.y0, x1: pbX1, y1: rowZone.y1 };
   return { rowZone, mainZone, pbZone };

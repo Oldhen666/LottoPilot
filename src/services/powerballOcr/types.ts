@@ -1,5 +1,5 @@
 /**
- * Layered Powerball ticket recognition — layout-first, OCR-second.
+ * Powerball ticket recognition — full-image OCR + spatial row grouping.
  */
 
 /** Visual / layout family (not US state name). */
@@ -17,9 +17,3 @@ export type PbAnchorHints = {
 
 export type MlKitBlock = { text: string; lines?: Array<{ text: string }> };
 export type MlKitResult = { text: string; blocks?: MlKitBlock[] };
-
-export type RowParseCandidate = {
-  main: number[];
-  special: number | null;
-  score: number;
-};

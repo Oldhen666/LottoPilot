@@ -1,5 +1,6 @@
 /**
- * Orchestrates layers 1–4 + fallback to legacy full-frame parse when split is weak.
+ * Powerball: layer1 (document flatten + band) → full-image ML Kit OCR → row layout parse.
+ * DYE 1.0 read-phase (digit-only denoise) is applied in usParseLine when parsing play lines.
  */
 import { Platform } from 'react-native';
 import {
@@ -9,26 +10,14 @@ import {
   type ParsedTicket,
   type TicketPreprocessDebugInfo,
 } from '../ocr';
-import { collectAnchorHintsFromText } from './anchors';
-import { PB_MAIN_COUNT } from './constants';
 import { classifyPbTemplateFamily } from './layer2Family';
 import { runPowerballLayer1 } from './layer1Preprocess';
-import { runLayer4SplitRecognition } from './layer4Split';
-import { recognizeTicketText } from './mlkitRecognize';
+import { recognizeTicketText, recognizeTicketTextDetailed } from './mlkitRecognize';
+import { parseTicketFromLayoutFullImage } from './layoutFullImageOcr';
 import { copyVariantUrisForDebug } from '../ticketPreprocess/debugCopy';
-import type { PbAnchorHints, PbTemplateFamily } from './types';
-
-function emitDiagnosticBundle(
-  onDiagnosticBundle: ((info: { folderUri: string; summary: Record<string, unknown> }) => void) | undefined,
-  summary: Record<string, unknown>,
-  folderUri = '',
-): void {
-  try {
-    onDiagnosticBundle?.({ folderUri, summary });
-  } catch {
-    /* UI must not break OCR */
-  }
-}
+import type { PbTemplateFamily } from './types';
+import { preferYoloRowTicket, tryTicketFromYoloRowCrops } from './yoloRowTicketMerge';
+import { finalizeUsGameSpecialsFromRawText } from './rawTextSpecialFinalize';
 
 export async function runPowerballLayeredPipeline(
   imageUri: string,
@@ -42,9 +31,8 @@ export async function runPowerballLayeredPipeline(
     jurisdictionCode?: string;
     playsPerTicket?: number;
     debugPreprocessPreview?: (info: TicketPreprocessDebugInfo) => void;
-    /** Write per-scan folder under documentDirectory/scan_debug/ (images + summary.json). */
-    diagnosticBundle?: boolean;
-    onDiagnosticBundle?: (info: { folderUri: string; summary: Record<string, unknown> }) => void;
+    /** Native document scanner: already deskewed — skip second perspective + lighter photometry. */
+    fromDocumentScan?: boolean;
   },
 ): Promise<ParsedTicket | null> {
   if (Platform.OS === 'web') return null;
@@ -59,39 +47,41 @@ export async function runPowerballLayeredPipeline(
     jurisdictionCode: options.jurisdictionCode,
     playsPerTicket: options.playsPerTicket ?? 5,
   };
+  const plays = parseOpts.playsPerTicket;
 
-  const layer1 = await runPowerballLayer1(imageUri, {
-    includeDocumentDebug: !!options.debugPreprocessPreview,
-    diagnosticSnapshots: !!options.diagnosticBundle,
-  });
+  let layer1: Awaited<ReturnType<typeof runPowerballLayer1>>;
+  try {
+    layer1 = await runPowerballLayer1(imageUri, {
+      includeDocumentDebug: !!options.debugPreprocessPreview,
+      fromDocumentScan: options.fromDocumentScan === true,
+    });
+  } catch {
+    return null;
+  }
+
   try {
     if (layer1.width < 32 || layer1.height < 32 || !layer1.variantUris.length) {
-      if (options.diagnosticBundle) {
-        emitDiagnosticBundle(options.onDiagnosticBundle, {
-          ok: false,
-          reason: 'layer1_too_small_or_no_variants',
-          layer1Width: layer1.width,
-          layer1Height: layer1.height,
-          variantCount: layer1.variantUris.length,
-        });
-      }
       return null;
     }
 
     let family: PbTemplateFamily | undefined;
-    let hints: PbAnchorHints | undefined;
 
     try {
       const quick = await recognizeTicketText(layer1.variantUris[0]!);
       const quickText = quick.text ?? '';
 
-      family = classifyPbTemplateFamily(layer1.gray, layer1.width, layer1.height, quickText);
-      hints = collectAnchorHintsFromText(quickText);
+      family = classifyPbTemplateFamily(
+        layer1.gray,
+        layer1.width,
+        layer1.height,
+        quickText,
+        options.jurisdictionCode,
+      );
 
       const fullResults = await Promise.all(layer1.variantUris.map((u) => recognizeTicketText(u)));
       let bestFull: ParsedTicket | null = null;
       let bestFullScore = -1;
-      let bestMl: MlKitResult | null = null;
+      let bestVariantIndex = 0;
       for (let i = 0; i < fullResults.length; i++) {
         const ml = fullResults[i] as MlKitResult;
         const p = parseMlKitResultToTicket(ml, parseOpts);
@@ -99,117 +89,76 @@ export async function runPowerballLayeredPipeline(
         if (s > bestFullScore) {
           bestFullScore = s;
           bestFull = p;
-          bestMl = ml;
+          bestVariantIndex = i;
         }
       }
 
-      const layer4 = await runLayer4SplitRecognition(
-        layer1.gray,
-        layer1.width,
-        layer1.height,
-        layer1.variantUris,
+      const ocrUri = layer1.variantUris[bestVariantIndex]!;
+      const detailed = await recognizeTicketTextDetailed(ocrUri);
+
+      const layoutResult = parseTicketFromLayoutFullImage(
+        detailed.rawNative,
         family,
-        hints,
+        {
+          mainCount: options.mainCount,
+          mainMax: options.mainMax,
+          specialMin: options.specialMin ?? 1,
+          specialMax: options.specialMax,
+          playsPerTicket: plays,
+        },
+        { width: layer1.width, height: layer1.height },
       );
 
-      const rows = layer4.rows.filter(
-        (r) =>
-          r.main.length === PB_MAIN_COUNT &&
-          r.special != null &&
-          r.special >= 1 &&
-          r.special <= options.specialMax,
-      );
+      const mlForMerge: MlKitResult = {
+        text: detailed.text ?? '',
+        blocks: detailed.blocks,
+      };
+      const fullFromDetailed = parseMlKitResultToTicket(mlForMerge, parseOpts);
+
+      const sLayout = layoutResult.ticket ? scoreParsedTicket(layoutResult.ticket, options.mainCount, options.mainMax) : -1;
+      const sFull = fullFromDetailed ? scoreParsedTicket(fullFromDetailed, options.mainCount, options.mainMax) : -1;
 
       let resolved: ParsedTicket | null = null;
-      let parseSource: 'layered_split' | 'full_image_fallback' | 'none' = 'none';
 
-      if (rows.length >= 1) {
-        const allSets = rows.map((r) => r.main.slice(0, PB_MAIN_COUNT));
-        const specialsPerLine = rows.map((r) => (r.special != null && r.special > 0 ? r.special : 0));
-        const conf = Math.min(0.94, 0.5 + rows.length * 0.08);
-        const rawText = [quickText, bestMl?.text ?? ''].join('\n---\n');
-        const layered: ParsedTicket = {
-          mainNumbers: allSets[0]!,
-          allSets,
-          specialsPerLine,
-          drawDate: bestFull?.drawDate,
-          confidence: conf,
-          rawText,
-          addOnsDetected: bestFull?.addOnsDetected,
-        };
-        const sLayer = scoreParsedTicket(layered, options.mainCount, options.mainMax);
-        if (bestFull == null || sLayer >= bestFullScore - 2) {
-          resolved = layered;
-          parseSource = 'layered_split';
-        } else {
-          resolved = bestFull;
-          parseSource = bestFull ? 'full_image_fallback' : 'none';
-        }
-      } else {
-        resolved = bestFull;
-        parseSource = bestFull ? 'full_image_fallback' : 'none';
+      if (layoutResult.ticket && (sLayout >= sFull - 2 || fullFromDetailed == null)) {
+        resolved = { ...layoutResult.ticket };
+      } else if (fullFromDetailed) {
+        resolved = fullFromDetailed;
+      } else if (layoutResult.ticket) {
+        resolved = layoutResult.ticket;
       }
 
-      if (options.diagnosticBundle) {
-        try {
-          if (!layer1.diagnosticSnapshots) {
-            emitDiagnosticBundle(options.onDiagnosticBundle, {
-              ok: false,
-              reason: 'no_diagnostic_snapshots',
-              note: 'Layer1 did not produce diagnosticSnapshots (unexpected if diagnosticBundle was true).',
-            });
-          } else {
-            const { writePowerballScanDiagnosticBundle } = await import('./diagnosticBundle');
-            const out = await writePowerballScanDiagnosticBundle({
-              originalImageUri: imageUri,
-              layer1,
-              family,
-              hints,
-              layer4RowsAll: layer4.rows,
-              finalParsed: resolved,
-              parseSource,
-            });
-            if (out && options.onDiagnosticBundle) {
-              options.onDiagnosticBundle({ folderUri: out.folderUri, summary: { ...out.summary, ok: true } });
-            } else {
-              emitDiagnosticBundle(options.onDiagnosticBundle, {
-                ok: false,
-                reason: 'bundle_write_returned_null',
-                parseSource,
-              });
-            }
-          }
-        } catch (e) {
-          emitDiagnosticBundle(options.onDiagnosticBundle, {
-            ok: false,
-            reason: 'bundle_write_threw',
-            message: e instanceof Error ? e.message : String(e),
-          });
+      if (resolved && bestFull) {
+        resolved.drawDate = resolved.drawDate ?? bestFull.drawDate;
+        resolved.addOnsDetected = resolved.addOnsDetected ?? bestFull.addOnsDetected;
+      }
+
+      const yoloTicket = await tryTicketFromYoloRowCrops(ocrUri, family, {
+        mainCount: options.mainCount,
+        mainMax: options.mainMax,
+        specialMin: options.specialMin ?? 1,
+        specialMax: options.specialMax,
+        playsPerTicket: plays,
+      });
+      resolved = preferYoloRowTicket(resolved, yoloTicket, options.mainCount, options.mainMax);
+
+      if (resolved && bestFull) {
+        resolved.drawDate = resolved.drawDate ?? bestFull.drawDate;
+        resolved.addOnsDetected = resolved.addOnsDetected ?? bestFull.addOnsDetected;
+      }
+      if (resolved) {
+        const fullImageRaw = [quickText, detailed.text ?? ''].filter(Boolean).join('\n---\n');
+        if (yoloTicket && resolved === yoloTicket && (yoloTicket.rawText?.length ?? 0) > 0) {
+          resolved.rawText = [fullImageRaw, yoloTicket.rawText].filter(Boolean).join('\n---\n');
+        } else {
+          resolved.rawText = fullImageRaw;
         }
+
+        resolved = finalizeUsGameSpecialsFromRawText(resolved, 'powerball', options.specialMin ?? 1, options.specialMax);
       }
 
       return resolved;
-    } catch (e) {
-      if (options.diagnosticBundle && layer1.diagnosticSnapshots) {
-        try {
-          const { writePowerballScanDiagnosticBundleMinimal } = await import('./diagnosticBundle');
-          const out = await writePowerballScanDiagnosticBundleMinimal({
-            originalImageUri: imageUri,
-            layer1,
-            family,
-            hints,
-            error: e,
-          });
-          if (out && options.onDiagnosticBundle) {
-            options.onDiagnosticBundle({
-              folderUri: out.folderUri,
-              summary: { ...out.summary, ok: false, reason: 'pipeline_error' },
-            });
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+    } catch {
       return null;
     }
   } finally {
@@ -228,6 +177,10 @@ export async function runPowerballLayeredPipeline(
         /* ignore */
       }
     }
-    await layer1.cleanup();
+    try {
+      await layer1.cleanup();
+    } catch {
+      /* ignore */
+    }
   }
 }

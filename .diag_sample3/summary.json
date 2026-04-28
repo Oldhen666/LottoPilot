@@ -1,0 +1,1865 @@
+{
+  "version": 1,
+  "timestamp": "2026-04-10T20:02:27.195Z",
+  "platform": "android",
+  "flattenMode": "perspective",
+  "parseSource": "full_image_fallback",
+  "detectedRows": {
+    "rowEdgesY": [
+      150,
+      334,
+      492,
+      600,
+      711,
+      946
+    ],
+    "nRows": 5,
+    "globalMainColumnSegment": {
+      "edges": [
+        0,
+        344,
+        488,
+        569,
+        657,
+        775
+      ],
+      "method": "valley",
+      "referenceSpanIndex": 9,
+      "padFrac": 0.125,
+      "zoneMx0": 0,
+      "zoneMx1": 775,
+      "pbX0": 681,
+      "pbX1": 960
+    },
+    "playRect": {
+      "mx0": 19,
+      "mx1": 691,
+      "px0": 710,
+      "px1": 940,
+      "ry0": 150,
+      "ry1": 946
+    }
+  },
+  "variantLabels": [
+    "gray_trim",
+    "watermark_fade",
+    "clahe_regions",
+    "pb_column_boost",
+    "adaptive_morph",
+    "clahe_mid"
+  ],
+  "cells": [
+    {
+      "rowIndex": 1,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 150,
+        "width": 433,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_cell_1_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_cell_1_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_cell_1_variant_0.png",
+        "row_1_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 1,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 150,
+        "width": 245,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_cell_2_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_cell_2_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_cell_2_variant_0.png",
+        "row_1_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 1,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 150,
+        "width": 139,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_cell_3_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_cell_3_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_cell_3_variant_0.png",
+        "row_1_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 1,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 150,
+        "width": 150,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_cell_4_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_cell_4_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_cell_4_variant_0.png",
+        "row_1_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "C",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        -1000,
+        -35
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 1,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 150,
+        "width": 166,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_cell_5_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_cell_5_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_cell_5_variant_0.png",
+        "row_1_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "calotte",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "BA\ncalotte",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -50,
+        -50
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 1,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 150,
+        "width": 390,
+        "height": 184
+      },
+      "cropCompareRow1": {
+        "nominalFile": "cell_compare/row1_powerball_nominal_v0.png",
+        "paddedFile": "cell_compare/row1_powerball_padded_v0.png"
+      },
+      "cropFiles": [
+        "row_1_powerball_variant_0.png",
+        "row_1_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "BALL\ncalottery\nplay",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "BALL\ncalottery",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        -55,
+        -40
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 334,
+        "width": 433,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_cell_1_variant_0.png",
+        "row_2_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 334,
+        "width": 245,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_cell_2_variant_0.png",
+        "row_2_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 334,
+        "width": 139,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_cell_3_variant_0.png",
+        "row_2_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 334,
+        "width": 150,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_cell_4_variant_0.png",
+        "row_2_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 334,
+        "width": 166,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_cell_5_variant_0.png",
+        "row_2_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "PL",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -35,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 2,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 334,
+        "width": 390,
+        "height": 44
+      },
+      "cropFiles": [
+        "row_2_powerball_variant_0.png",
+        "row_2_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 371,
+        "width": 433,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_cell_1_variant_0.png",
+        "row_3_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "CE\n07\n10\n$ 15 10",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "CE\n07 10\n5 10",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        -40,
+        -40
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 371,
+        "width": 245,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_cell_2_variant_0.png",
+        "row_3_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "1 10\nI024\n5\n20",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "1020\n5 1024",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        -40,
+        -40
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 371,
+        "width": 139,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_cell_3_variant_0.png",
+        "row_3_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "20 27\n24 34",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "20 27\n24 34",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -40,
+        -40
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 371,
+        "width": 150,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_cell_4_variant_0.png",
+        "row_3_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "27\n2\n34\n6E\n45",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "27 6E\n3445",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        -40,
+        -40
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 371,
+        "width": 166,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_cell_5_variant_0.png",
+        "row_3_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "62\n45",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "62",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        8,
+        70
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 3,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 371,
+        "width": 390,
+        "height": 86
+      },
+      "cropFiles": [
+        "row_3_powerball_variant_0.png",
+        "row_3_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "7\n7\n4\n62\n45 12",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "62\n445\n12",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 1,
+      "chosenVariantLabel": "watermark_fade",
+      "heuristicScores": [
+        10,
+        50
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 466,
+        "width": 433,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_cell_1_variant_0.png",
+        "row_5_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 466,
+        "width": 245,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_cell_2_variant_0.png",
+        "row_5_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 466,
+        "width": 139,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_cell_3_variant_0.png",
+        "row_5_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 466,
+        "width": 150,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_cell_4_variant_0.png",
+        "row_5_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 466,
+        "width": 166,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_cell_5_variant_0.png",
+        "row_5_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 5,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 466,
+        "width": 390,
+        "height": 26
+      },
+      "cropFiles": [
+        "row_5_powerball_variant_0.png",
+        "row_5_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 499,
+        "width": 433,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_cell_1_variant_0.png",
+        "row_7_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 499,
+        "width": 245,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_cell_2_variant_0.png",
+        "row_7_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 499,
+        "width": 139,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_cell_3_variant_0.png",
+        "row_7_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 499,
+        "width": 150,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_cell_4_variant_0.png",
+        "row_7_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 499,
+        "width": 166,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_cell_5_variant_0.png",
+        "row_7_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 7,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 573,
+        "y0": 499,
+        "width": 387,
+        "height": 10
+      },
+      "cropFiles": [
+        "row_7_powerball_variant_0.png",
+        "row_7_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 545,
+        "width": 433,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_cell_1_variant_0.png",
+        "row_9_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 545,
+        "width": 245,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_cell_2_variant_0.png",
+        "row_9_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 545,
+        "width": 139,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_cell_3_variant_0.png",
+        "row_9_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 545,
+        "width": 150,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_cell_4_variant_0.png",
+        "row_9_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 545,
+        "width": 166,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_cell_5_variant_0.png",
+        "row_9_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 9,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 545,
+        "width": 390,
+        "height": 11
+      },
+      "cropFiles": [
+        "row_9_powerball_variant_0.png",
+        "row_9_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": 1,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 0,
+        "y0": 560,
+        "width": 433,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_cell_1_variant_0.png",
+        "row_10_cell_1_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": 2,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 285,
+        "y0": 560,
+        "width": 245,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_cell_2_variant_0.png",
+        "row_10_cell_2_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": 3,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 454,
+        "y0": 560,
+        "width": 139,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_cell_3_variant_0.png",
+        "row_10_cell_3_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": 4,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 532,
+        "y0": 560,
+        "width": 150,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_cell_4_variant_0.png",
+        "row_10_cell_4_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": 5,
+      "kind": "main",
+      "columnSegmentMethod": "valley",
+      "cropRectPadded": {
+        "x0": 609,
+        "y0": 560,
+        "width": 166,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_cell_5_variant_0.png",
+        "row_10_cell_5_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null,
+          "mlKitPayloadHadConfidenceField": false
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    },
+    {
+      "rowIndex": 10,
+      "cellIndex": "powerball",
+      "kind": "powerball",
+      "cropRectPadded": {
+        "x0": 570,
+        "y0": 560,
+        "width": 390,
+        "height": 40
+      },
+      "cropFiles": [
+        "row_10_powerball_variant_0.png",
+        "row_10_powerball_variant_1.png"
+      ],
+      "variantOcr": [
+        {
+          "variantIndex": 0,
+          "variantLabel": "gray_trim",
+          "rawText": "",
+          "confidence": null
+        },
+        {
+          "variantIndex": 1,
+          "variantLabel": "watermark_fade",
+          "rawText": "",
+          "confidence": null
+        }
+      ],
+      "chosenVariantIndex": 0,
+      "chosenVariantLabel": "gray_trim",
+      "heuristicScores": [
+        -1000,
+        -1000
+      ],
+      "ocrConfidencesPerVariant": [
+        null,
+        null
+      ]
+    }
+  ],
+  "layer4RowCandidates": [],
+  "mergedPerRow": [],
+  "finalParsed": {
+    "mainNumbers": [
+      7,
+      10,
+      15,
+      20,
+      27
+    ],
+    "allSets": [
+      [
+        7,
+        10,
+        15,
+        20,
+        27
+      ],
+      [
+        2,
+        34,
+        45,
+        51,
+        59
+      ],
+      [
+        12,
+        24,
+        37,
+        46,
+        55
+      ]
+    ],
+    "specialsPerLine": [
+      24,
+      19,
+      19
+    ],
+    "confidence": 0.9
+  },
+  "notes": {
+    "ocrConfidence": "Per-cell confidence is best-effort from expo-mlkit-ocr native payload; null means not exposed on this build.",
+    "exportHint": "This path is app-private (not listed in Files / 下载). Use the Check screen button \"Share diagnostic ZIP\" to save to Downloads or another app.",
+    "cellCrop": "Main columns: global segmentation from one reference row (see summary globalMainColumnSegment); same x-edges for all rows. Crops use ink + padding."
+  }
+}

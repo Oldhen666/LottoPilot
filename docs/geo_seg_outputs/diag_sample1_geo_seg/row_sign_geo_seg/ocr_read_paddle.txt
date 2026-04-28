@@ -1,0 +1,36 @@
+engine=paddleocr
+source=C:\Users\xiang\Documents\projects\LottoPilot\docs\geo_seg_outputs\diag_sample1_geo_seg
+row_count=5
+
+[row_00_clean.png]
+  mode: incomplete
+  six_pairs: -
+  digits_full: 7
+  digits_main_roi: 
+  digits_pb_roi: 
+
+[row_01_clean.png]
+  mode: incomplete
+  six_pairs: -
+  digits_full: 
+  digits_main_roi: 5129
+  digits_pb_roi: 
+
+[row_02_clean.png]
+  mode: incomplete
+  six_pairs: 62 43 74 65
+  digits_full: 624374655
+  digits_main_roi: 19243746
+  digits_pb_roi: 
+
+[row_03_clean.png]
+  mode: incomplete
+  six_pairs: 14 18
+  digits_full: 1418
+  digits_main_roi: 14
+  digits_pb_roi: 
+
+[row_04_clean.png]
+  mode: full_12_digits
+  six_pairs: 05 31 63 10 23 74
+  digits_full: 053163102374073070260103710083581000

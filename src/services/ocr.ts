@@ -8,19 +8,22 @@ import type { LotteryId } from '../types/lottery';
 import {
   fixUsPbLeadingDigitNoise,
   mergeUsPbLeadingZeroPair,
+  extractMegaBallFromRawText,
+  extractMegaBallsPerLineFromRawText,
+  extractPowerballFromRawText,
+  extractPowerballsPerLineFromRawText,
+  normalizeOcrOAsZeroAdjacentDigits,
   parseUsPbMmLine,
   stripUsPlayLineLetterPrefix,
 } from './powerballOcr/usParseLine';
 import { USE_LAYERED_POWERBALL_OCR } from './powerballOcr/constants';
 import { recognizeTicketText } from './powerballOcr/mlkitRecognize';
+import { finalizeUsGameSpecialsFromRawText } from './powerballOcr/rawTextSpecialFinalize';
 import { copyVariantUrisForDebug } from './ticketPreprocess/debugCopy';
 import { preprocessTicketImageForOcr } from './ticketPreprocess/preprocessTicketImage';
 
 /** Dev-only: preprocess variants copied to stable file URIs for UI preview. */
 export type TicketPreprocessDebugInfo = { uris: string[]; labels: string[] };
-
-/** Powerball layered path: per-scan folder under documentDirectory/scan_debug/ + summary.json */
-export type TicketScanDiagnosticBundleInfo = { folderUri: string; summary: Record<string, unknown> };
 
 /** Add-on data detected from OCR (auto-check when present) */
 export interface ParsedAddOns {
@@ -40,6 +43,8 @@ export interface ParsedTicket {
   confidence: number;
   /** Raw OCR text for date parsing / debugging */
   rawText?: string;
+  /** __DEV__ only: which preprocess variant produced this parse */
+  debugOcrVariant?: { label: string; uri: string; score: number };
   /** Add-ons detected from ticket image (EXTRA, ENCORE, TAG, POWER_PLAY, DOUBLE_PLAY) */
   addOnsDetected?: ParsedAddOns;
 }
@@ -227,6 +232,49 @@ function extractUsPbMmFromBlocks(
   specialMax: number,
   maxPlays: number,
 ): { allSets: number[][]; specialsPerLine: number[] } {
+  const isPlayLike = (line: string): boolean => {
+    const t = line.replace(/\s+/g, ' ').trim();
+    if (t.length < 3) return false;
+    // Skip obvious non-play regions (odds tables and disclaimers are very numeric).
+    if (
+      /\bODDS\b|\bJACKPOT\b|\bWIN\s*\/\s*SHARE\b|\bWINSHARE\b|\bPRIZE\b|\bYOU\s+MATCH\b|\bMULTIPLIER\b|\bTIMES\b|\bRAFFLE\b/i.test(
+        t,
+      )
+    )
+      return false;
+    if (/\bPRINTED\b|\bRET#\b|\bDRAW\b|\bCASH\s+VALUE\b|\bEST\.\s*CASH\b/i.test(t)) return false;
+    if (/\b(?:FRI|SAT|SUN|MON|TUE|WED|THU)\b/i.test(t) && /\b20\d{2}\b/.test(t)) return false;
+
+    // Must look like a play line: either starts with a play letter + whitespace + digits (avoid glued noise like "BD48"),
+    // or contains QP/OP/GP markers, or (Mega Millions) contains MB marker ("MB: 07", "MB23", "MBZ3").
+    const hasPlayPrefix = /^\s*[A-Z]{1,2}\s*[\.\)]?\s+\d/.test(t);
+    const hasPickMarker = /\b(?:QP|OP|GP|CP|AP|0P|aP|oP)\b/i.test(t);
+    const hasMbMarker = specialMax <= 25 && /\bMB\s*[:#\.]?\s*\w?\d{1,2}\b/i.test(t);
+    const norm = normalizeOcrOAsZeroAdjacentDigits(t);
+    const stripped = stripUsPlayLineLetterPrefix(norm).replace(/\s+/g, ' ').trim();
+    const toks = stripped.match(/\b\d{1,4}\b/g) ?? [];
+    const hasGluedFourDigitPairRun =
+      !hasPlayPrefix &&
+      !hasPickMarker &&
+      !hasMbMarker &&
+      // CA often OCRs "14 24" as "1424" in otherwise clean main-number lines.
+      toks.length === 4 &&
+      toks.some((s) => s.length === 4) &&
+      toks.filter((s) => s.length <= 2).length === 3 &&
+      !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm);
+    const hasBareFiveMains =
+      !hasPlayPrefix &&
+      !hasPickMarker &&
+      !hasMbMarker &&
+      // Strict: a line that is basically just five 1–2 digit tokens.
+      /^\s*(\d{1,2}\s+){4}\d{1,2}\s*$/.test(stripped) &&
+      // Avoid date/price-ish lines.
+      !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm);
+    if (!hasPlayPrefix && !hasPickMarker && !hasMbMarker && !hasBareFiveMains && !hasGluedFourDigitPairRun) return false;
+    const p = parseUsPbMmLine(t, mainCount, mainMax, specialMin, specialMax);
+    return p.main.length >= mainCount;
+  };
+
   const allSets: number[][] = [];
   const specialsPerLine: number[] = [];
   outer: for (const block of blocks) {
@@ -237,8 +285,8 @@ function extractUsPbMmFromBlocks(
       lineTexts.push(block.text);
     }
     for (const rawLine of lineTexts) {
+      if (!isPlayLike(rawLine)) continue;
       const t = rawLine.replace(/\s+/g, ' ').trim();
-      if (t.length < 3) continue;
       const { main, special } = parseUsPbMmLine(t, mainCount, mainMax, specialMin, specialMax);
       if (main.length >= mainCount) {
         allSets.push(main.slice(0, mainCount));
@@ -259,6 +307,42 @@ function extractUsPbMmFromLinesText(
   specialMax: number,
   maxPlays: number,
 ): { allSets: number[][]; specialsPerLine: number[] } {
+  const isPlayLike = (line: string): boolean => {
+    const t = line.replace(/\s+/g, ' ').trim();
+    if (t.length < 3) return false;
+    if (
+      /\bODDS\b|\bJACKPOT\b|\bWIN\s*\/\s*SHARE\b|\bWINSHARE\b|\bPRIZE\b|\bYOU\s+MATCH\b|\bMULTIPLIER\b|\bTIMES\b|\bRAFFLE\b/i.test(
+        t,
+      )
+    )
+      return false;
+    if (/\bPRINTED\b|\bRET#\b|\bDRAW\b|\bCASH\s+VALUE\b|\bEST\.\s*CASH\b/i.test(t)) return false;
+    if (/\b(?:FRI|SAT|SUN|MON|TUE|WED|THU)\b/i.test(t) && /\b20\d{2}\b/.test(t)) return false;
+    const hasPlayPrefix = /^\s*[A-Z]{1,2}\s*[\.\)]?\s+\d/.test(t);
+    const hasPickMarker = /\b(?:QP|OP|GP|CP|AP|0P|aP|oP)\b/i.test(t);
+    const hasMbMarker = specialMax <= 25 && /\bMB\s*[:#\.]?\s*\w?\d{1,2}\b/i.test(t);
+    const norm = normalizeOcrOAsZeroAdjacentDigits(t);
+    const stripped = stripUsPlayLineLetterPrefix(norm).replace(/\s+/g, ' ').trim();
+    const toks = stripped.match(/\b\d{1,4}\b/g) ?? [];
+    const hasGluedFourDigitPairRun =
+      !hasPlayPrefix &&
+      !hasPickMarker &&
+      !hasMbMarker &&
+      toks.length === 4 &&
+      toks.some((s) => s.length === 4) &&
+      toks.filter((s) => s.length <= 2).length === 3 &&
+      !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm);
+    const hasBareFiveMains =
+      !hasPlayPrefix &&
+      !hasPickMarker &&
+      !hasMbMarker &&
+      /^\s*(\d{1,2}\s+){4}\d{1,2}\s*$/.test(stripped) &&
+      !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm);
+    if (!hasPlayPrefix && !hasPickMarker && !hasMbMarker && !hasBareFiveMains && !hasGluedFourDigitPairRun) return false;
+    const p = parseUsPbMmLine(t, mainCount, mainMax, specialMin, specialMax);
+    return p.main.length >= mainCount;
+  };
+
   const allSets: number[][] = [];
   const specialsPerLine: number[] = [];
   const lines = fullText
@@ -267,6 +351,7 @@ function extractUsPbMmFromLinesText(
     .filter((l) => l.length >= 3);
   for (const line of lines) {
     if (allSets.length >= maxPlays) break;
+    if (!isPlayLike(line)) continue;
     const { main, special } = parseUsPbMmLine(line, mainCount, mainMax, specialMin, specialMax);
     if (main.length >= mainCount) {
       allSets.push(main.slice(0, mainCount));
@@ -288,7 +373,36 @@ function extractUsPbMmFromDigitStream(
   specialMax: number,
   maxPlays: number,
 ): { allSets: number[][]; specialsPerLine: number[] } {
-  const normalized = stripUsPlayLineLetterPrefix(fullText.replace(/\s+/g, ' '));
+  // Digit-stream is a last-resort fallback; aggressively restrict to lines that look like actual play lines
+  // to avoid polluting picks with dates/times/odds (which often contain in-range 1–2 digit tokens).
+  const playishLines = fullText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((l) => {
+      if (l.length < 3) return false;
+      if (/\bODDS\b|\bPRINTED\b|\bRET#\b|\bDRAW\b|\bCASH\s+VALUE\b|\bEST\.\s*CASH\b/i.test(l)) return false;
+      if (/\b(?:FRI|SAT|SUN|MON|TUE|WED|THU)\b/i.test(l) && /\b20\d{2}\b/.test(l)) return false;
+      const p = parseUsPbMmLine(l, mainCount, mainMax, specialMin, specialMax);
+      if (p.main.length >= mainCount) return true;
+      const norm = normalizeOcrOAsZeroAdjacentDigits(l);
+      const stripped = stripUsPlayLineLetterPrefix(norm).replace(/\s+/g, ' ').trim();
+      const toks = stripped.match(/\b\d{1,4}\b/g) ?? [];
+      if (
+        /^\s*(\d{1,2}\s+){4}\d{1,2}\s*$/.test(stripped) &&
+        !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm)
+      )
+        return true;
+      if (
+        toks.length === 4 &&
+        toks.some((s) => s.length === 4) &&
+        toks.filter((s) => s.length <= 2).length === 3 &&
+        !/[$€£]|\/|:|-|\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)\b/i.test(norm)
+      )
+        return true;
+      return /^\s*[A-Z]\s*[\.\)]?\s*\d/.test(l);
+    });
+  const normalized = stripUsPlayLineLetterPrefix(playishLines.join(' ').replace(/\s+/g, ' '));
   let allDigits =
     normalized.match(/\b\d{1,2}\b/g)?.map((s) => parseInt(s, 10)).filter((n) => !isNaN(n)) ?? [];
   allDigits = mergeUsPbLeadingZeroPair(allDigits);
@@ -458,6 +572,7 @@ export function scoreParsedTicket(
   parsed: ParsedTicket | null,
   mainCount: number,
   mainMax: number,
+  opts?: { lotteryId?: string; specialMin?: number; specialMax?: number },
 ): number {
   if (!parsed) return -1;
   const sets = parsed.allSets?.length ? parsed.allSets : [parsed.mainNumbers];
@@ -471,6 +586,22 @@ export function scoreParsedTicket(
     if (parsed.drawDate) s += 5;
     if (parsed.specialNumbers?.length) s += 5;
     if (parsed.specialsPerLine?.some((n) => n > 0)) s += 8;
+    // PB/MM: strongly prefer variants that actually contain labeled specials in rawText.
+    if (parsed.rawText && (opts?.lotteryId === 'mega_millions' || opts?.lotteryId === 'powerball')) {
+      const smin = opts?.specialMin ?? 1;
+      const smax = opts?.specialMax ?? 0;
+      if (opts?.lotteryId === 'mega_millions') {
+        const mbList = extractMegaBallsPerLineFromRawText(parsed.rawText);
+        const mbOne = extractMegaBallFromRawText(parsed.rawText);
+        if (mbList.length) s += 18;
+        if (mbOne != null && mbOne >= smin && (smax ? mbOne <= smax : true)) s += 10;
+      } else if (opts?.lotteryId === 'powerball') {
+        const pbList = extractPowerballsPerLineFromRawText(parsed.rawText);
+        const pbOne = extractPowerballFromRawText(parsed.rawText);
+        if (pbList.length) s += 18;
+        if (pbOne != null && pbOne >= smin && (smax ? pbOne <= smax : true)) s += 10;
+      }
+    }
     if (parsed.rawText && parsed.rawText.length > 40) s += 2;
     best = Math.max(best, s);
   }
@@ -497,9 +628,8 @@ export async function parseTicketFromImage(
     playsPerTicket?: number;
     /** Dev: called with copied URIs right before temp preprocess files are deleted. */
     debugPreprocessPreview?: (info: TicketPreprocessDebugInfo) => void;
-    /** Powerball layered OCR: write full diagnostic bundle (images + summary.json). */
-    diagnosticBundle?: boolean;
-    onDiagnosticBundle?: (info: TicketScanDiagnosticBundleInfo) => void;
+    /** Set when the image comes from `react-native-document-scanner-plugin` (already flattened). */
+    imageSource?: 'document_scan' | 'default';
   }
 ): Promise<ParsedTicket | null> {
   if (Platform.OS === 'web') return null;
@@ -521,9 +651,17 @@ export async function parseTicketFromImage(
     playsPerTicket: options?.playsPerTicket,
   };
 
+  const finalizeUsSpecials = (t: ParsedTicket | null) =>
+    (finalizeUsGameSpecialsFromRawText(
+      t,
+      lotteryId,
+      options?.specialMin ?? 1,
+      options?.specialMax ?? specialMax,
+    ) as ParsedTicket | null);
+
   const runOne = async (uri: string) => {
     const result = (await recognizeTicketText(uri)) as MlKitResult;
-    return parseMlKitResultToTicket(result, parseOpts);
+    return finalizeUsSpecials(parseMlKitResultToTicket(result, parseOpts));
   };
 
   if (lotteryId === 'powerball' && USE_LAYERED_POWERBALL_OCR) {
@@ -532,35 +670,44 @@ export async function parseTicketFromImage(
       const layered = await runPowerballLayeredPipeline(imageUri, {
         ...parseOpts,
         debugPreprocessPreview: options?.debugPreprocessPreview,
-        diagnosticBundle: options?.diagnosticBundle,
-        onDiagnosticBundle: options?.onDiagnosticBundle,
+        fromDocumentScan: options?.imageSource === 'document_scan',
       });
-      if (layered) return layered;
+      if (layered) return finalizeUsSpecials(layered);
     } catch {
-      /* Pipeline swallows most errors and returns null after writing a minimal diagnostic folder.
-       * Do not call onDiagnosticBundle here — it would overwrite folderUri with an empty string. */
       /* fall through to generic preprocess */
     }
   }
 
   try {
-    const pre = await preprocessTicketImageForOcr(imageUri, lotteryId);
+    const pre = await preprocessTicketImageForOcr(imageUri, lotteryId, {
+      fromDocumentScan: options?.imageSource === 'document_scan',
+    });
     try {
       const results = await Promise.all(pre.variantUris.map((u) => recognizeTicketText(u)));
       let best: ParsedTicket | null = null;
       let bestScore = -1;
+      let bestVariant: { label: string; uri: string; score: number } | null = null;
       for (let i = 0; i < results.length; i++) {
         const parsed = parseMlKitResultToTicket(results[i] as MlKitResult, parseOpts);
-        const s = scoreParsedTicket(parsed, mainCount, mainMax);
+        const s = scoreParsedTicket(parsed, mainCount, mainMax, {
+          lotteryId,
+          specialMin: parseOpts.specialMin,
+          specialMax: parseOpts.specialMax,
+        });
         if (s > bestScore) {
           bestScore = s;
           best = parsed;
+          bestVariant = { label: pre.labels?.[i] ?? `v${i}`, uri: pre.variantUris[i]!, score: s };
         }
       }
       if (best) {
         const useMain = best.mainNumbers;
         const confBoost = Math.min(0.95, 0.45 + bestScore * 0.008);
-        return { ...best, confidence: useMain.length >= mainCount ? confBoost : best.confidence };
+        const withConf: ParsedTicket = { ...best, confidence: useMain.length >= mainCount ? confBoost : best.confidence };
+        if (typeof __DEV__ !== 'undefined' && __DEV__ && bestVariant) {
+          withConf.debugOcrVariant = bestVariant;
+        }
+        return finalizeUsSpecials(withConf);
       }
       return await runOne(imageUri);
     } finally {

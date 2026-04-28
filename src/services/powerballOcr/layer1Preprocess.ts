@@ -1,44 +1,32 @@
 /**
- * Layer 1: universal preprocessing for Powerball — document flatten (quad + perspective or skew fallback),
- * boundary trim, header/footer suppression, grayscale / CLAHE / adaptive variants, multiple aligned outputs.
+ * Layer 1: Powerball — document flatten, trim, coarse play-area band, grayscale + mild CLAHE for full-image OCR.
  */
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 import { deleteUriIfLocal, readJpegUriToRgba, writeGrayAsJpegUri } from '../ticketPreprocess/codec';
 import {
-  adaptiveThreshold,
-  blendRegionStronger,
   claheGray,
   cropGrayRect,
-  gaussianBlurGray,
-  highPassSubtractBackground,
-  morphOpenClose,
+  gammaGray,
+  percentileStretchGray,
   rgbaToGrayscale,
   rgbaToGrayscaleWatermarkFade,
-  subtractBackground,
   trimInkBounds,
 } from '../ticketPreprocess/pixelOps';
-import { flattenDocumentGray, type DocumentFlattenMode } from '../ticketPreprocess/documentFlatten';
-import { getRegionRects } from '../ticketPreprocess/regions';
-import { PB_LAYER1_VARIANTS } from './constants';
+import { flattenDocumentGray } from '../ticketPreprocess/documentFlatten';
+import {
+  PB_LAYER1_MAX_WIDTH,
+  PB_LAYER1_VARIANTS,
+  PB_LAYER1_VARIANTS_DOC_SCAN,
+  PB_PLAY_BAND_Y0_FRAC,
+  PB_PLAY_BAND_Y1_FRAC,
+} from './constants';
 
-const MAX_W = 960;
+const MAX_W = PB_LAYER1_MAX_WIDTH;
 const TILES = 8;
 
-export type PowerballLayer1DiagnosticSnapshots = {
-  /** After document flatten, before trim (perspective / skew / pass-through). */
-  afterFlatten: {
-    gray: Uint8ClampedArray;
-    width: number;
-    height: number;
-    flattenMode: DocumentFlattenMode;
-  };
-  /** Same pixel grid as row/column detection (after trim + header/footer band). */
-  normalizedForRegions: { gray: Uint8ClampedArray; width: number; height: number };
-};
-
 export type PowerballLayer1 = {
-  /** Grid area after trim + vertical crop (no blind full-frame OCR target). */
+  /** Full frame after flatten (document scan) or trim + play band (camera). */
   gray: Uint8ClampedArray;
   width: number;
   height: number;
@@ -47,8 +35,6 @@ export type PowerballLayer1 = {
   /** Perspective / quad debug JPEGs (not used for OCR variant scoring). */
   documentDebugUris: string[];
   documentDebugLabels: string[];
-  /** Dev diagnostic: intermediate grays (only when diagnosticSnapshots requested). */
-  diagnosticSnapshots?: PowerballLayer1DiagnosticSnapshots;
   cleanup: () => Promise<void>;
 };
 
@@ -72,14 +58,14 @@ function suppressHeaderFooterBand(
   width: number,
   height: number,
 ): { gray: Uint8ClampedArray; width: number; height: number } {
-  const y0 = Math.floor(height * 0.055);
-  const y1 = Math.floor(height * 0.93);
+  const y0 = Math.floor(height * PB_PLAY_BAND_Y0_FRAC);
+  const y1 = Math.floor(height * PB_PLAY_BAND_Y1_FRAC);
   return cropGrayRect(gray, width, height, 0, y0, width, y1);
 }
 
 export async function runPowerballLayer1(
   uri: string,
-  options?: { includeDocumentDebug?: boolean; diagnosticSnapshots?: boolean },
+  options?: { includeDocumentDebug?: boolean; fromDocumentScan?: boolean },
 ): Promise<PowerballLayer1> {
   const tempUris: string[] = [];
 
@@ -100,7 +86,6 @@ export async function runPowerballLayer1(
       labels: ['web_fallback'],
       documentDebugUris: [],
       documentDebugLabels: [],
-      diagnosticSnapshots: undefined,
       cleanup: async () => {
         await revokeOrDelete(workUri);
       },
@@ -115,105 +100,67 @@ export async function runPowerballLayer1(
 
   const flattenOut = flattenDocumentGray(gray, grayWmFull, width, height, {
     includeDebug: options?.includeDocumentDebug === true,
+    /** Same source as native scanner deskew: only optional small-angle rotate, no second homography. */
+    skipPerspective: options?.fromDocumentScan === true,
   });
   gray = flattenOut.gray;
   grayWmFull = flattenOut.grayWm ?? grayWmFull;
   width = flattenOut.width;
   height = flattenOut.height;
 
-  const snapAfterFlatten =
-    options?.diagnosticSnapshots === true
-      ? {
-          gray: flattenOut.gray.slice(),
-          width: flattenOut.width,
-          height: flattenOut.height,
-          flattenMode: flattenOut.mode,
-        }
-      : undefined;
+  const fromScan = options?.fromDocumentScan === true;
 
-  const trimmed = trimInkBounds(gray, width, height);
-  gray = trimmed.gray;
-  const { ox, oy, width: tw, height: th } = trimmed;
-  const grayWmCrop = cropGrayRect(grayWmFull, width, height, ox, oy, ox + tw, oy + th).gray;
-  width = tw;
-  height = th;
+  /** Camera photos: tighten to ink + play band. Scanner: plugin already deskewed/cropped — keep full flatten frame. */
+  if (!fromScan) {
+    const trimmed = trimInkBounds(gray, width, height);
+    gray = trimmed.gray;
+    width = trimmed.width;
+    height = trimmed.height;
+    const inner = suppressHeaderFooterBand(gray, width, height);
+    gray = inner.gray;
+    width = inner.width;
+    height = inner.height;
+  }
 
-  const wBand = width;
-  const hBand = height;
-  const inner = suppressHeaderFooterBand(gray, wBand, hBand);
-  gray = inner.gray;
-  width = inner.width;
-  height = inner.height;
-  const innerWm = suppressHeaderFooterBand(grayWmCrop, wBand, hBand);
-  const grayWmBand = innerWm.gray;
-
-  const diagnosticSnapshots: PowerballLayer1DiagnosticSnapshots | undefined =
-    options?.diagnosticSnapshots === true && snapAfterFlatten
-      ? {
-          afterFlatten: snapAfterFlatten,
-          normalizedForRegions: { gray: gray.slice(), width, height },
-        }
-      : undefined;
-
-  const rects = getRegionRects('powerball');
+  /** Mild CLAHE; gamma/levels skipped for document-scan inputs to avoid stacking on scanner enhance. */
   const claheMild = claheGray(gray, width, height, TILES, 2.0);
-  const claheMainStrong = claheGray(gray, width, height, TILES, 3.1);
-  const claheSpec = claheGray(gray, width, height, TILES, 2.6);
-
-  let enhanced = blendRegionStronger(claheMild, claheMainStrong, width, height, rects.main, 0.72);
-  enhanced = blendRegionStronger(enhanced, claheSpec, width, height, rects.special, 0.52);
-
-  const bgBlur = gaussianBlurGray(gray, width, height, 21, 6);
-  const sub = subtractBackground(gray, bgBlur);
-  const subClahe = claheGray(sub, width, height, TILES, 1.55);
-  const bin = adaptiveThreshold(subClahe, width, height, 31, 4);
-  const morph = morphOpenClose(bin, width, height);
-
-  /** Stronger special column for PB crops (full-frame variant). */
-  const clahePbBoost = claheGray(gray, width, height, TILES, 3.4);
-  const pbBoosted = blendRegionStronger(claheMild, clahePbBoost, width, height, rects.special, 0.85);
-
-  /** CA-style orange seal: de-tint + large-kernel high-pass + CLAHE on main/PB regions (scanner-style). */
-  const hpWm = highPassSubtractBackground(grayWmBand, width, height, 55, 14);
-  const wmHpClahe = claheGray(hpWm, width, height, TILES, 2.25);
-  const wmBaseClahe = claheGray(grayWmBand, width, height, TILES, 2.75);
-  let wmExposure = blendRegionStronger(wmHpClahe, wmBaseClahe, width, height, rects.main, 0.62);
-  wmExposure = blendRegionStronger(
-    wmExposure,
-    claheGray(grayWmBand, width, height, TILES, 3.0),
-    width,
-    height,
-    rects.special,
-    0.52,
-  );
+  const gammaLift = gammaGray(gray, 0.78);
+  const levelsSoft = percentileStretchGray(gray, 0.8, 97.5);
+  const variantLimit = fromScan ? PB_LAYER1_VARIANTS_DOC_SCAN : PB_LAYER1_VARIANTS;
 
   const labels: string[] = [];
   const push = async (g: Uint8ClampedArray, label: string, gw: number, gh: number) => {
-    const u = await writeGrayAsJpegUri(g, gw, gh, 88);
+    const u = await writeGrayAsJpegUri(g, gw, gh, 90);
     tempUris.push(u);
     labels.push(label);
   };
 
-  await push(gray, 'gray_trim', width, height);
-  await push(wmExposure, 'watermark_fade', width, height);
-  await push(enhanced, 'clahe_regions', width, height);
-  await push(pbBoosted, 'pb_column_boost', width, height);
-  await push(morph, 'adaptive_morph', width, height);
-  const claheAlt = claheGray(gray, width, height, TILES, 2.35);
-  await push(claheAlt, 'clahe_mid', width, height);
+  await push(gray, fromScan ? 'gray_fullframe' : 'gray_trim', width, height);
+  await push(claheMild, 'clahe_mild', width, height);
+  if (!fromScan) {
+    await push(gammaLift, 'gamma_078', width, height);
+    await push(levelsSoft, 'levels_soft', width, height);
+  }
 
   const documentDebugUris: string[] = [];
   const documentDebugLabels: string[] = [];
+  /** DEV: flattened image before ink trim / band — explains why previews looked unlike deskew on camera path. */
+  if (options?.includeDocumentDebug === true && !fromScan) {
+    const uRef = await writeGrayAsJpegUri(flattenOut.gray, flattenOut.width, flattenOut.height, 90);
+    tempUris.push(uRef);
+    documentDebugUris.push(uRef);
+    documentDebugLabels.push('gray_after_flatten');
+  }
   if (options?.includeDocumentDebug === true && flattenOut.debugStages.length > 0) {
     for (const st of flattenOut.debugStages) {
-      const u = await writeGrayAsJpegUri(st.gray, st.width, st.height, 88);
+      const u = await writeGrayAsJpegUri(st.gray, st.width, st.height, 90);
       tempUris.push(u);
       documentDebugUris.push(u);
       documentDebugLabels.push(st.label);
     }
   }
 
-  const cap = Math.min(PB_LAYER1_VARIANTS, tempUris.length - documentDebugUris.length);
+  const cap = Math.min(variantLimit, tempUris.length - documentDebugUris.length);
   const variantUris = tempUris.slice(0, cap);
   const lab = labels.slice(0, cap);
 
@@ -225,7 +172,6 @@ export async function runPowerballLayer1(
     labels: lab,
     documentDebugUris,
     documentDebugLabels,
-    diagnosticSnapshots,
     cleanup: async () => {
       for (const u of tempUris) {
         await revokeOrDelete(u);

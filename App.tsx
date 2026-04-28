@@ -65,7 +65,21 @@ function ResultScreenAsync({
 }
 
 function TabHome() {
-  const [screen, setScreen] = useState<'home' | 'check' | 'result' | 'draws'>('home');
+  type TabHomeScreen = 'home' | 'check' | 'result' | 'draws';
+  const readLastScreen = (): TabHomeScreen => {
+    const g = globalThis as unknown as { __LP_lastTabHomeScreen?: TabHomeScreen };
+    return g.__LP_lastTabHomeScreen ?? 'home';
+  };
+  const writeLastScreen = (s: TabHomeScreen) => {
+    const g = globalThis as unknown as { __LP_lastTabHomeScreen?: TabHomeScreen };
+    g.__LP_lastTabHomeScreen = s;
+  };
+
+  const [screen, _setScreen] = useState<TabHomeScreen>(readLastScreen());
+  const setScreen = useCallback((s: TabHomeScreen) => {
+    writeLastScreen(s);
+    _setScreen(s);
+  }, []);
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
   const [editRecordId, setEditRecordId] = useState<string | null>(null);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');

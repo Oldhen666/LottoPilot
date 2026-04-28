@@ -18,8 +18,8 @@
     "compass:update": "ts-node --project scripts/tsconfig.json scripts/update-compass.ts",
     "postinstall": "patch-package",
     "test": "node node_modules/jest/bin/jest.js",
-    "update:preview": "eas update --channel preview --environment preview",
-    "update:production": "eas update --channel production --environment production"
+    "update:preview": "npx cross-env CI=1 eas update --channel preview --environment preview",
+    "update:production": "npx cross-env CI=1 eas update --channel production --environment production --message \"production OTA\""
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
