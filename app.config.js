@@ -9,7 +9,7 @@ module.exports = {
     name: 'LottoPilot',
     slug: 'LottoPilot',
     scheme: 'lottopilot',
-    version: '1.0.6',
+    version: '1.0.7',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -26,7 +26,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 35,
+      versionCode: 36,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -38,12 +38,14 @@ module.exports = {
     updates: {
       url: 'https://u.expo.dev/2ae23643-f627-4cfc-9214-764502ce4849',
     },
-    runtimeVersion: '1.0.6',
+    runtimeVersion: '1.0.7',
     plugins: [
       [
         'react-native-google-mobile-ads',
         {
-          androidAppId: 'ca-app-pub-3940256099942544~3347511713',
+          /** LottoPilot Android — AdMob app (Play). */
+          androidAppId: 'ca-app-pub-1778212368956758~9185292273',
+          /** Replace when you add an iOS app in AdMob; until then Google sample avoids iOS native init issues in dev. */
           iosAppId: 'ca-app-pub-3940256099942544~1458002511',
         },
       ],
