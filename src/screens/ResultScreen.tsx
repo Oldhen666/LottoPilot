@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,6 @@ import {
   BackHandler,
   Platform,
   Linking,
-  Modal,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,11 +18,14 @@ import { useEntitlements } from '../hooks/useEntitlements';
 import { getPrizeTierIcon } from '../utils/prizeTierIcon';
 import type { CheckRecord } from '../db/sqlite';
 import { addToPickBook } from '../db/sqlite';
+import { getAutoAddPicksToPickBook } from '../services/pickBookAutoAdd';
 
 interface Props {
   record: CheckRecord;
+  /** Check next ticket: reset scan form + stay on check flow. */
   onDone: () => void;
-  onEditNumbers?: () => void;
+  /** Back: return to check screen with previous inputs kept (no reset). */
+  onBack: () => void;
 }
 
 /** Pick book row id prefix for lines saved from check result (Refine can list these with current Strategy Set). */
@@ -32,15 +33,13 @@ export function pickBookStrategyIdFromCheck(recordId: string, lineIdx: number): 
   return `from_check_${recordId}_L${lineIdx}`;
 }
 
-export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
+export default function ResultScreen({ record, onDone, onBack }: Props) {
   const { plan } = useEntitlements();
   const def = LOTTERY_DEFS[record.lottery_id];
   const mainSet = new Set(record.winning_numbers);
   const specialSet = record.winning_special?.length ? new Set(record.winning_special) : undefined;
 
   const insets = useSafeAreaInsets();
-  const [exitModalVisible, setExitModalVisible] = useState(false);
-  const [addedLineKeys, setAddedLineKeys] = useState<Set<string>>(new Set());
 
   const lineRows = useMemo(
     () =>
@@ -58,50 +57,37 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
     [record]
   );
 
-  const finishExit = useCallback(() => {
-    setExitModalVisible(false);
+  const finishAndLeave = useCallback(async () => {
+    const autoAdd = await getAutoAddPicksToPickBook();
+    if (autoAdd) {
+      for (let i = 0; i < lineRows.length; i++) {
+        const line = lineRows[i];
+        if (!line) continue;
+        const main = line.user_main ?? [];
+        const special = line.user_special ?? [];
+        const explanation = `Check result · Line ${i + 1} · ${def?.name ?? record.lottery_id}`;
+        const sid = pickBookStrategyIdFromCheck(record.id, i);
+        // eslint-disable-next-line no-await-in-loop
+        await addToPickBook(
+          record.lottery_id,
+          record.draw_date,
+          [{ main, special, explanation }],
+          sid,
+          `Check line ${i + 1}`
+        );
+      }
+    }
     onDone();
-  }, [onDone]);
-
-  const openExitModal = useCallback(() => {
-    setExitModalVisible(true);
-  }, []);
+  }, [def?.name, lineRows, onDone, record.draw_date, record.id, record.lottery_id]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      openExitModal();
+      onBack();
       return true;
     });
     return () => sub.remove();
-  }, [openExitModal]);
-
-  const handleAddLineToPickBook = async (lineIdx: number) => {
-    const line = lineRows[lineIdx];
-    if (!line) return;
-    const key = `${record.id}_${lineIdx}`;
-    if (addedLineKeys.has(key)) {
-      Alert.alert('Pick Book', 'This line is already added.');
-      return;
-    }
-    const main = line.user_main ?? [];
-    const special = line.user_special ?? [];
-    const explanation = `Check result · Line ${lineIdx + 1} · ${def?.name ?? record.lottery_id}`;
-    const sid = pickBookStrategyIdFromCheck(record.id, lineIdx);
-    const id = await addToPickBook(
-      record.lottery_id,
-      record.draw_date,
-      [{ main, special, explanation }],
-      sid,
-      `Check line ${lineIdx + 1}`
-    );
-    if (id) {
-      setAddedLineKeys((prev) => new Set(prev).add(key));
-      Alert.alert('', 'Added into pick book');
-    } else {
-      Alert.alert('Pick Book', 'This line is already in Pick Book for this draw.');
-    }
-  };
+  }, [onBack]);
 
   return (
     <ScrollView
@@ -109,16 +95,10 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
     >
       <View style={styles.headerRow}>
-        <TouchableOpacity onPress={openExitModal} style={styles.backBtn}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
-        {onEditNumbers ? (
-          <TouchableOpacity onPress={onEditNumbers} style={styles.editBtn}>
-            <Ionicons name="create-outline" size={18} color={COLORS.gold} />
-            <Text style={styles.editBtnText}>Edit numbers</Text>
-          </TouchableOpacity>
-        ) : null}
       </View>
       <Text style={styles.title}>Check Result</Text>
       <Text style={styles.subtitle}>
@@ -237,9 +217,10 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
 
       {(!!record.result_json?.addOnResults && Object.keys(record.result_json.addOnResults).length > 0) ||
       record.add_ons_inputs_json?.EXTRA ||
-      record.add_ons_inputs_json?.ENCORE ? (
+      record.add_ons_inputs_json?.ENCORE ||
+      record.add_ons_inputs_json?.TAG ? (
         <View style={styles.addOnSection}>
-          <Text style={styles.addOnSectionTitle}>Add-on Results</Text>
+          <Text style={styles.addOnSectionTitle}>Extra & add-on results</Text>
           {record.result_json?.addOnResults?.EXTRA && (
             <View style={styles.addOnBlock}>
               <Text style={styles.addOnBlockTitle}>EXTRA</Text>
@@ -262,7 +243,7 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
           )}
           {record.result_json?.addOnResults?.ENCORE && (
             <View style={styles.addOnBlock}>
-              <Text style={styles.addOnBlockTitle}>ENCORE</Text>
+              <Text style={styles.addOnBlockTitle}>EXTRA</Text>
               <Text style={styles.addOnText}>
                 Your: {record.result_json.addOnResults.ENCORE.user} • Winning: {record.result_json.addOnResults.ENCORE.winning}
               </Text>
@@ -273,21 +254,30 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
           )}
           {record.add_ons_inputs_json?.ENCORE && !record.result_json?.addOnResults?.ENCORE && (
             <View style={styles.addOnBlock}>
-              <Text style={styles.addOnBlockTitle}>ENCORE</Text>
+              <Text style={styles.addOnBlockTitle}>EXTRA</Text>
               <Text style={styles.addOnText}>
-                Your number: {record.add_ons_inputs_json.ENCORE}. Official ENCORE winning number is not in the app database for this draw, so a
-                match cannot be calculated. Update draws (scrape) or confirm on OLG.
+                Your number: {record.add_ons_inputs_json.ENCORE}. The official winning number for this add-on is not in the app database for
+                this draw, so a match cannot be calculated. Update draws (scrape) or confirm on your lottery corporation site.
               </Text>
             </View>
           )}
           {record.result_json?.addOnResults?.TAG && (
             <View style={styles.addOnBlock}>
-              <Text style={styles.addOnBlockTitle}>TAG</Text>
+              <Text style={styles.addOnBlockTitle}>EXTRA</Text>
               <Text style={styles.addOnText}>
                 Your: {record.result_json.addOnResults.TAG.user} • Winning: {record.result_json.addOnResults.TAG.winning}
               </Text>
               <Text style={styles.addOnText}>
                 {record.result_json.addOnResults.TAG.matchedDigits} digits matched • {record.result_json.addOnResults.TAG.prizeText}
+              </Text>
+            </View>
+          )}
+          {record.add_ons_inputs_json?.TAG && !record.result_json?.addOnResults?.TAG && (
+            <View style={styles.addOnBlock}>
+              <Text style={styles.addOnBlockTitle}>EXTRA</Text>
+              <Text style={styles.addOnText}>
+                Your number: {record.add_ons_inputs_json.TAG}. The official winning number for this add-on is not in the app database for this
+                draw, so a match cannot be calculated. Update draws (scrape) or confirm on your lottery corporation site.
               </Text>
             </View>
           )}
@@ -331,42 +321,11 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
         </View>
       ) : null}
 
-      <TouchableOpacity style={styles.doneBtn} onPress={openExitModal}>
-        <Text style={styles.doneBtnText}>Done</Text>
+      <TouchableOpacity style={styles.doneBtn} onPress={() => void finishAndLeave()}>
+        <Text style={styles.doneBtnText}>Check next ticket</Text>
       </TouchableOpacity>
 
       <BannerAdPlaceholder testId="result" userPlan={plan} />
-
-      <Modal visible={exitModalVisible} transparent animationType="fade" onRequestClose={() => setExitModalVisible(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setExitModalVisible(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.exitModalCard}>
-            <Text style={styles.exitModalTitle}>Add picks to your book for refining model?</Text>
-            <Text style={styles.exitModalHint}>Tap the book icon to save a line to Pick Book for Strategy Lab.</Text>
-            <ScrollView style={styles.exitModalScroll} keyboardShouldPersistTaps="handled">
-              {lineRows.map((line, lineIdx) => (
-                <View key={lineIdx} style={styles.exitLineRow}>
-                  <View style={styles.exitLineNums}>
-                    <Text style={styles.exitLineLabel}>{lineRows.length > 1 ? `Line ${lineIdx + 1}` : 'Your line'}</Text>
-                    <Text style={styles.exitLineText} numberOfLines={2}>
-                      {[...line.user_main, ...(line.user_special ?? [])].join(' ')}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.exitBookBtn}
-                    onPress={() => handleAddLineToPickBook(lineIdx)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Ionicons name="book-outline" size={22} color={COLORS.gold} />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
-            <TouchableOpacity style={styles.exitModalDone} onPress={finishExit}>
-              <Text style={styles.exitModalDoneText}>Continue</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
     </ScrollView>
   );
 }
@@ -374,11 +333,9 @@ export default function ResultScreen({ record, onDone, onEditNumbers }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   content: { paddingHorizontal: SPACING.screenPadding },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   backBtn: { flexDirection: 'row', alignItems: 'center' },
   backText: { color: COLORS.textSecondary, fontSize: 16, marginLeft: 6 },
-  editBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 12 },
-  editBtnText: { color: COLORS.gold, fontSize: 14, marginLeft: 6 },
   title: { fontSize: 24, fontWeight: '700', color: COLORS.text, marginBottom: 4 },
   subtitle: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 24 },
   section: { marginBottom: 24 },
@@ -431,38 +388,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   doneBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
-  exitModalCard: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: '80%',
-    width: '100%',
-    maxWidth: 400,
-    alignSelf: 'center',
-  },
-  exitModalTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
-  exitModalHint: { color: COLORS.textSecondary, fontSize: 13, marginBottom: 12, lineHeight: 20 },
-  exitModalScroll: { maxHeight: 280, marginBottom: 12 },
-  exitLineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.bgElevated,
-    gap: 8,
-  },
-  exitLineNums: { flex: 1, minWidth: 0 },
-  exitLineLabel: { color: COLORS.textMuted, fontSize: 11, marginBottom: 4 },
-  exitLineText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
-  exitBookBtn: { padding: 8 },
-  exitModalDone: {
-    backgroundColor: COLORS.gold,
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  exitModalDoneText: { color: COLORS.bg, fontWeight: '700', fontSize: 16 },
 });

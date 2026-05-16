@@ -93,10 +93,17 @@ export async function preprocessTicketImageForOcr(
   // Deskew-style photometry baseline (no rotation changes):
   // background flatten (divide), gamma-like curve, CLAHE, percentile levels, min-filter + linear-light emphasis, clarity+contrast.
   // Keep it mild and fast; apply to PB/MM only so we don't fight other ticket styles.
-  const deskewBase =
-    (lotteryId === 'powerball' || lotteryId === 'mega_millions')
-      ? backgroundFlattenDivideGray(gray, width, height, Math.max(31, ((Math.min(width, height) / 8) | 1)), 0)
-      : gray;
+  const isPbMm = lotteryId === 'powerball' || lotteryId === 'mega_millions';
+  const deskewBase = isPbMm
+    ? backgroundFlattenDivideGray(
+        gray,
+        width,
+        height,
+        // Keep kernel modest; too large can wash out thin strokes and hurt OCR.
+        31,
+        0,
+      )
+    : gray;
 
   const claheMild = claheGray(gray, width, height, TILES, 2.0);
   const claheMainStrong = claheGray(gray, width, height, TILES, 3.1);
@@ -106,7 +113,7 @@ export async function preprocessTicketImageForOcr(
   enhanced = blendRegionStronger(enhanced, claheSpec, width, height, rects.special, 0.48);
 
   // Nudge CLAHE-based variant toward deskew preprocessing: add levels + mild "linear light" emphasis + clarity.
-  if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+  if (isPbMm) {
     const x0 = claheGray(deskewBase, width, height, TILES, 2.8);
     const x1 = percentileStretchGray(x0, 0.8, 3.0);
     const mn = minimumFilterGray(x1, width, height, 3);
@@ -146,7 +153,11 @@ export async function preprocessTicketImageForOcr(
     );
     await push(wmBlend, 'watermark_fade');
   }
-  await push(morph, 'adaptive_morph');
+  // `adaptive_morph` tends to "harden" small text/noise into digit-like blobs on Canadian tickets,
+  // which often hurts 7/50 line extraction and increases runtime. Keep it for PB/MM only.
+  if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+    await push(morph, 'adaptive_morph');
+  }
 
   return {
     variantUris: tempUris,

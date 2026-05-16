@@ -1,8 +1,32 @@
 /**
  * Expo app config - loads .env and passes to app via extra.
- * This ensures Supabase credentials are available even when process.env is not.
+ * Uses Node fs only (no dotenv package) so EAS / expo config works when node_modules is incomplete.
  */
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+
+(function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    process.env[key] = val;
+  }
+})();
 
 module.exports = {
   expo: {

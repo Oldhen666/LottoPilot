@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,10 +6,11 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  TextInput,
   InteractionManager,
   Alert,
   Modal,
+  useWindowDimensions,
+  Animated,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import Slider from '@react-native-community/slider';
@@ -18,74 +19,124 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import { getEntitlements, type UserPlan } from '../services/entitlements';
-import { requiresRewardedAdGate, recordSuccessfulGenerate, setFreeGenerateCountAfterAd } from '../services/compassGenerateGate';
+import {
+  requiresRewardedAdGate,
+  requiresEvaluateAdGate,
+  recordSuccessfulGenerate,
+  recordSuccessfulEvaluate,
+  setFreeGenerateCountAfterAd,
+  setFreeEvaluateCountAfterAd,
+} from '../services/compassGenerateGate';
 import { showRewardedAdForGeneratePicks, REWARDED_AD_MESSAGES } from '../services/rewardedAdService';
-import { isIAPAvailable, getIAPProducts, formatPiratePrice } from '../services/iap';
 import { getCurrentUserEmail, onAuthStateChange } from '../services/supabase';
 import { getCompassPayload, getDrawsForCompass } from '../compass/compassCache';
 import { generateRemainingNumbers } from '../utils/localAnalysis';
 import { DEFAULT_GENERATE_PARAMS, type GenerateParams } from '../types/generateParams';
-import type { CompassPayload, NumberTrendScore, PositionTopK, ShapeStats } from '../compass/types';
+import type { CompassPayload } from '../compass/types';
+import {
+  validRangeForSlot,
+  countsForPositionSlot,
+  tierMapForPositionCounts,
+  tierMapForCountsInRange,
+  type PositionTier,
+} from '../compass/positionPickTier';
 import type { LotteryId } from '../types/lottery';
 import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
+import { getLastHomeLottery, setLastHomeLottery } from '../services/homeLotteryStorage';
+import {
+  trendStarsFromScore,
+  positionStarsForNumber,
+  shapeStarsForMainCandidate,
+  specialBallFrequencyStars,
+  specialTierStars,
+  shapeStarsForSpecialWithMains,
+} from '../compass/pickInsightStars';
+import { InsightStarRow } from '../components/InsightStarRow';
 
 const COMPASS_LOTTERIES: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
-
-const POSITION_NOTE =
-  'Position-based stats assume numbers are sorted ascending; lower positions naturally skew smaller.';
-
-type Tab = 'trends' | 'positions' | 'shape';
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function CompassScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const [lotteryId, setLotteryId] = useState<LotteryId>('lotto_max');
+  const [lotteryDropdownOpen, setLotteryDropdownOpen] = useState(false);
   const [payload, setPayload] = useState<CompassPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [insufficientHistory, setInsufficientHistory] = useState(false);
-  const [tab, setTab] = useState<Tab>('trends');
-  const [searchNum, setSearchNum] = useState('');
-  const [selectedPos, setSelectedPos] = useState(1);
   const [lines, setLines] = useState<number[][]>([]);
   const [currentPicks, setCurrentPicks] = useState<number[]>([]);
+  const [currentSpecial, setCurrentSpecial] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateModalVisible, setGenerateModalVisible] = useState(false);
   const [generateParams, setGenerateParams] = useState<GenerateParams>({ ...DEFAULT_GENERATE_PARAMS });
   const [guideModalVisible, setGuideModalVisible] = useState(false);
   const [plan, setPlan] = useState<UserPlan>('free');
-  const [adGateModalVisible, setAdGateModalVisible] = useState(false);
-  const [isSignedIn, setIsSignedIn] = useState<boolean | null>(null);
-  const [lockFirstNumber, setLockFirstNumber] = useState(false);
-  const [piratePrice, setPiratePrice] = useState('$3.49');
+  const [storedPickEvalFingerprint, setStoredPickEvalFingerprint] = useState<string | null>(null);
 
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      getLastHomeLottery().then((id) => {
+        if (cancelled || !id) return;
+        if (!COMPASS_LOTTERIES.includes(id)) return;
+        setLotteryId((cur) => (cur !== id ? id : cur));
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
+  const [adGateModalVisible, setAdGateModalVisible] = useState(false);
+  const [adGatePending, setAdGatePending] = useState<'generate' | 'evaluate' | null>(null);
+  const [isSignedIn, setIsSignedIn] = useState<boolean | null>(null);
   const def = LOTTERY_DEFS[lotteryId];
   const mainCount = def?.main_count ?? 7;
   const mainMin = def?.main_min ?? 1;
   const mainMax = def?.main_max ?? 49;
 
-  const addToPicks = useCallback((n: number) => {
-    if (n < mainMin || n > mainMax) return;
-    setCurrentPicks((prev) => {
-      if (prev.includes(n)) return prev;
-      const next = [...prev, n].sort((a, b) => a - b).slice(0, mainCount);
-      return next;
-    });
-  }, [mainCount, mainMin, mainMax]);
-
-  const setPickAt = useCallback((idx: number, value: number | '') => {
-    setCurrentPicks((prev) => {
-      const arr = [...prev];
-      while (arr.length <= idx) arr.push(0);
-      arr[idx] = value === '' ? 0 : value;
-      const filtered = arr.filter((x) => x > 0);
-      return [...new Set(filtered)].sort((a, b) => a - b).slice(0, mainCount);
-    });
-  }, [mainCount]);
-
   useEffect(() => {
     setLines([]);
     setCurrentPicks([]);
+    setCurrentSpecial(null);
+    setStoredPickEvalFingerprint(null);
   }, [lotteryId]);
+
+  const pickEvalFingerprint = useMemo(
+    () => JSON.stringify({ lotteryId, picks: currentPicks, special: currentSpecial }),
+    [lotteryId, currentPicks, currentSpecial]
+  );
+
+  const pickEvaluationMode: 'evaluate' | 'view' =
+    storedPickEvalFingerprint != null && storedPickEvalFingerprint === pickEvalFingerprint ? 'view' : 'evaluate';
+
+  const navigateToPickEvaluation = useCallback(() => {
+    (navigation as { navigate: (n: string, p: Record<string, unknown>) => void }).navigate('PickEvaluation', {
+      lotteryId,
+      picks: currentPicks,
+      specialPick: currentSpecial,
+    });
+    setStoredPickEvalFingerprint(pickEvalFingerprint);
+  }, [navigation, lotteryId, currentPicks, currentSpecial, pickEvalFingerprint]);
+
+  const goPickEvaluation = useCallback(() => {
+    if (pickEvaluationMode === 'view') {
+      navigateToPickEvaluation();
+      return;
+    }
+    if (requiresEvaluateAdGate(plan, isSignedIn)) {
+      setAdGatePending('evaluate');
+      setAdGateModalVisible(true);
+      return;
+    }
+    navigateToPickEvaluation();
+    recordSuccessfulEvaluate(plan, isSignedIn);
+  }, [
+    pickEvaluationMode,
+    navigateToPickEvaluation,
+    plan,
+    isSignedIn,
+  ]);
 
   useEffect(() => {
     getCurrentUserEmail().then((email) => setIsSignedIn(email !== null));
@@ -100,12 +151,6 @@ export default function CompassScreen() {
 
   useEffect(() => {
     getEntitlements().then((e) => setPlan(e.plan));
-  }, []);
-
-  useEffect(() => {
-    if (isIAPAvailable()) {
-      getIAPProducts().then(({ pirate }) => setPiratePrice(formatPiratePrice(pirate)));
-    }
   }, []);
 
   const loadCompass = useCallback(async () => {
@@ -132,19 +177,16 @@ export default function CompassScreen() {
     }, [])
   );
 
-  const maxRange = def?.main_max ?? 49;
-  const picksPerDraw = def?.main_count ?? 7;
-
   const handleOpenGenerateModal = useCallback(() => {
-    const existing = currentPicks.filter((x) => x > 0);
-    if (existing.length === 0) return;
     setGenerateParams({ ...DEFAULT_GENERATE_PARAMS });
     setGenerateModalVisible(true);
-  }, [currentPicks]);
+  }, []);
 
   const runGenerate = useCallback(async () => {
-    const existing = currentPicks.filter((x) => x > 0);
-    if (existing.length === 0) return;
+    let existing = currentPicks.filter((x) => x > 0);
+    // If user taps Smart generate again without resetting and the line is full,
+    // regenerate a fresh line instead of returning an empty delta.
+    if (existing.length >= mainCount) existing = [];
     setGenerating(true);
     try {
       const draws = await getDrawsForCompass(lotteryId);
@@ -153,11 +195,19 @@ export default function CompassScreen() {
         Alert.alert('Need more data', 'Sync draws from Supabase first (at least 2 draws).');
         return;
       }
-      const remaining = generateRemainingNumbers(lotteryId, history, existing, generateParams, payload, lockFirstNumber);
-      if (remaining) {
+      const remaining = generateRemainingNumbers(lotteryId, history, existing, generateParams, payload, false);
+      if (remaining != null) {
         const merged = [...existing, ...remaining].sort((a, b) => a - b).slice(0, mainCount);
-        setLines((prev) => [...prev, merged]);
-        setCurrentPicks([]);
+        setCurrentPicks(merged);
+        // Powerball / Mega Millions need a special ball for Evaluate; Smart generate only filled mains before.
+        if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+          const smin = def.special_min ?? 1;
+          const smax = def.special_max ?? 1;
+          setCurrentSpecial(smax >= smin ? smin + Math.floor(Math.random() * (smax - smin + 1)) : null);
+        } else {
+          setCurrentSpecial(null);
+        }
+        setStoredPickEvalFingerprint(null);
         recordSuccessfulGenerate(plan, isSignedIn);
       }
     } catch {
@@ -165,88 +215,148 @@ export default function CompassScreen() {
     } finally {
       setGenerating(false);
     }
-  }, [lotteryId, currentPicks, mainCount, generateParams, payload, lockFirstNumber, plan, isSignedIn]);
+  }, [lotteryId, currentPicks, mainCount, generateParams, payload, plan, isSignedIn]);
 
   const handleConfirmGenerate = useCallback(async () => {
-    const existing = currentPicks.filter((x) => x > 0);
-    if (existing.length === 0) return;
     if (requiresRewardedAdGate(plan, isSignedIn)) {
+      setAdGatePending('generate');
       setAdGateModalVisible(true);
       return;
     }
     setGenerateModalVisible(false);
     await runGenerate();
-  }, [lotteryId, currentPicks, mainCount, generateParams, payload, lockFirstNumber, plan, isSignedIn, runGenerate]);
+  }, [plan, isSignedIn, runGenerate]);
 
   const handleAdGateUpgrade = useCallback(() => {
     setAdGateModalVisible(false);
+    setAdGatePending(null);
     setGenerateModalVisible(false);
     (navigation as { navigate: (name: string) => void }).navigate('Settings');
   }, [navigation]);
 
   const handleAdGateKeepFree = useCallback(async () => {
+    const pending = adGatePending;
     const completed = await showRewardedAdForGeneratePicks();
     if (!completed) {
       Alert.alert('Ad required', REWARDED_AD_MESSAGES.adLoadFailed);
       return;
     }
-    setFreeGenerateCountAfterAd(); // 每次看完广告仅生成一组 pick
     setAdGateModalVisible(false);
-    setGenerateModalVisible(false);
-    await runGenerate();
-  }, [runGenerate]);
+    setAdGatePending(null);
+    await new Promise<void>((resolve) => {
+      InteractionManager.runAfterInteractions(() => resolve());
+    });
+    if (pending === 'generate') {
+      setFreeGenerateCountAfterAd();
+      setGenerateModalVisible(false);
+      await runGenerate();
+    } else if (pending === 'evaluate') {
+      setFreeEvaluateCountAfterAd();
+      navigateToPickEvaluation();
+      recordSuccessfulEvaluate(plan, isSignedIn);
+    }
+  }, [adGatePending, runGenerate, navigateToPickEvaluation, plan, isSignedIn]);
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
-    >
-      <View style={styles.headerRow}>
-        <Ionicons name="compass" size={24} color={COLORS.gold} style={styles.titleIcon} />
-        <Text style={styles.title}>Compass</Text>
-        <View style={styles.headerSpacer} />
-        <TouchableOpacity onPress={() => setGuideModalVisible(true)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} style={styles.headerBookBtn}>
-          <Ionicons name="book-outline" size={22} color={COLORS.gold} />
-        </TouchableOpacity>
+    <View style={styles.screenWrap}>
+      <View style={[styles.stickyHeader, { paddingTop: insets.top + SPACING.screenPadding }]}>
+        <View style={styles.content}>
+          <View style={styles.headerRow}>
+            <Ionicons name="compass" size={24} color={COLORS.gold} style={styles.titleIcon} />
+            <Text style={styles.title}>Compass</Text>
+            <View style={styles.headerSpacer} />
+            <TouchableOpacity
+              onPress={() => setGuideModalVisible(true)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={styles.headerBookBtn}
+              accessibilityLabel="Compass guide"
+              accessibilityRole="button"
+            >
+              <Ionicons name="bulb-outline" size={22} color={COLORS.gold} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.lotteryDropdownWrap}>
+            <TouchableOpacity
+              style={styles.lotteryDropdownTrigger}
+              onPress={() => setLotteryDropdownOpen((o) => !o)}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.lotteryDropdownTriggerText} numberOfLines={1}>
+                {LOTTERY_DEFS[lotteryId].name}
+              </Text>
+              <Ionicons
+                name={lotteryDropdownOpen ? 'chevron-up' : 'chevron-down'}
+                size={20}
+                color={COLORS.gold}
+              />
+            </TouchableOpacity>
+            {lotteryDropdownOpen && (
+              <View style={styles.lotteryDropdownMenu}>
+                {COMPASS_LOTTERIES.map((id, idx, arr) => (
+                  <TouchableOpacity
+                    key={id}
+                    style={[
+                      styles.lotteryDropdownItem,
+                      idx === arr.length - 1 && styles.lotteryDropdownItemLast,
+                      lotteryId === id && styles.lotteryDropdownItemActive,
+                    ]}
+                    onPress={() => {
+                      setLotteryId(id);
+                      void setLastHomeLottery(id);
+                      setLotteryDropdownOpen(false);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.lotteryDropdownItemText,
+                        lotteryId === id && styles.lotteryDropdownItemTextActive,
+                      ]}
+                    >
+                      {LOTTERY_DEFS[id].name}
+                    </Text>
+                    {lotteryId === id && <Ionicons name="checkmark" size={18} color={COLORS.gold} />}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        </View>
       </View>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.content, { paddingTop: SPACING.screenPadding, paddingBottom: 16 }]}
+      >
 
       <CompassUserGuideModal visible={guideModalVisible} onClose={() => setGuideModalVisible(false)} />
 
       <RewardedAdGateModal
         visible={adGateModalVisible}
+        onWatchAd={handleAdGateKeepFree}
         onUpgrade={handleAdGateUpgrade}
-        onKeepFreePlan={handleAdGateKeepFree}
       />
 
-      <View style={styles.lotteryRow}>
-        <Text style={styles.label}>Lottery</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.lotteryScroll}>
-          {COMPASS_LOTTERIES.map((id) => (
-            <TouchableOpacity
-              key={id}
-              style={[styles.lotteryChip, lotteryId === id && styles.lotteryChipActive]}
-              onPress={() => setLotteryId(id)}
-            >
-              <Text style={styles.lotteryChipText}>{LOTTERY_DEFS[id].name}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
       <PickSlots
+        lotteryId={lotteryId}
+        payload={payload}
         mainCount={mainCount}
         mainMin={mainMin}
         mainMax={mainMax}
         lines={lines}
         picks={currentPicks}
-        setPickAt={setPickAt}
+        onPicksChange={setCurrentPicks}
+        specialPick={currentSpecial}
+        onSpecialPickChange={setCurrentSpecial}
         onGenerate={handleOpenGenerateModal}
-        onReset={() => { setLines([]); setCurrentPicks([]); }}
+        onReset={() => {
+          setLines([]);
+          setCurrentPicks([]);
+          setCurrentSpecial(null);
+          setStoredPickEvalFingerprint(null);
+        }}
         generating={generating}
         userPlan={plan}
-        lockFirstNumber={lockFirstNumber}
-        onUpgradeToPirate={() => (navigation as { navigate: (s: string) => void }).navigate('Settings')}
-        onLockFirstNumberChange={setLockFirstNumber}
+        pickEvaluationMode={pickEvaluationMode}
+        onPickEvaluation={goPickEvaluation}
       />
 
       <GenerateParamsModal
@@ -273,81 +383,55 @@ export default function CompassScreen() {
         <View style={styles.warnBox}>
           <Text style={styles.warnText}>No data available</Text>
         </View>
-      ) : (
-        <>
-          <View style={styles.tabRow}>
-            {(['trends', 'positions', 'shape'] as Tab[]).map((t) => (
-              <TouchableOpacity
-                key={t}
-                style={[styles.tab, tab === t && styles.tabActive]}
-                onPress={() => setTab(t)}
-              >
-                <Text style={[styles.tabText, tab === t && styles.tabTextActive]}>{t === 'trends' ? 'Trends' : t === 'positions' ? 'Positions' : 'Shape'}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {tab === 'trends' && (
-            <TrendsTab
-              payload={payload}
-              searchNum={searchNum}
-              setSearchNum={setSearchNum}
-              maxRange={maxRange}
-              onAddNumber={addToPicks}
-              userPlan={plan}
-            />
-          )}
-          {tab === 'positions' && (
-            <PositionsTab
-              payload={payload}
-              selectedPos={selectedPos}
-              setSelectedPos={setSelectedPos}
-              picksPerDraw={picksPerDraw}
-              onAddNumber={addToPicks}
-              userPlan={plan}
-            />
-          )}
-          {tab === 'shape' && <ShapeTab payload={payload} userPlan={plan} />}
-        </>
-      )}
-    </ScrollView>
+      ) : null}
+      </ScrollView>
+      <View style={styles.compassBannerDock}>
+        <BannerAdPlaceholder testId="compass-bottom" userPlan={plan} containerStyle={styles.compassBannerAd} />
+      </View>
+    </View>
   );
 }
 
-const TREND_LEGEND =
-  'Score: 0–100, based on recent activity vs long-term deviation. Higher = more active recently. Level H→L: HIGH (67–100), NEUTRAL (34–66), LOW (0–33). Reference only.';
-
 const GUIDE_STEPS = [
-  { icon: 'list' as const, title: '1. Select lottery', text: 'Choose Lotto Max, Lotto 6/49, Powerball, or Mega Millions at the top.' },
-  { icon: 'pencil' as const, title: '2. Enter or pick numbers', text: 'Type numbers in the slots, or tap numbers from Trends/Positions below to add them.' },
-  { icon: 'stats-chart' as const, title: '3. Explore Trends', text: 'See which numbers are HOT (recently active) or COLD (less frequent). Tap a number to add it.' },
-  { icon: 'locate' as const, title: '4. Explore Positions', text: 'Pick a position (1–7). See which numbers appear most often at that slot. Tap to add.' },
-  { icon: 'albums' as const, title: '5. Explore Shape', text: 'View typical odd/even, low/high split, sum range, and max gap from historical draws.' },
-  { icon: 'sparkles' as const, title: '6. Generate number', text: 'After entering at least one number, tap Generate number. Adjust sliders (trend, position, shape) and confirm to fill remaining slots.' },
-  { icon: 'refresh' as const, title: '7. Reset', text: 'Tap Reset to clear all numbers and start over.' },
+  { icon: 'list' as const, title: '1. Select lottery', text: 'Choose Lotto Max, Lotto 6/49, Powerball, or Mega Millions from the menu under the title.' },
+  {
+    icon: 'pencil' as const,
+    title: '2. Pick numbers by position',
+    text: 'Tap each slot in order. Available balls use Position frequency tiers (green / yellow / red). Later slots update colors for that position. Tap a number to see Trend / Position / Shape star ratings (reference only), then Done to confirm.',
+  },
+  {
+    icon: 'star' as const,
+    title: '3. Star ratings',
+    text: 'When you tap a candidate number, a short summary shows up to five stars each for trend activity, how often that number appears in the current sorted slot, and how well your line matches typical historical shape.',
+  },
+  {
+    icon: 'sparkles' as const,
+    title: '4. Evaluate & Smart generate',
+    text: 'When your line is complete, open Pick Evaluation for the score breakdown, or return with View evaluation if nothing changed. Smart generate and Evaluate current pick use separate free-use counters (2 each, then ad or upgrade); watching an ad resets that counter. View evaluation does not add to the Evaluate counter. Smart generate can fill a line from parameters without hand-picking a first number.',
+  },
+  { icon: 'refresh' as const, title: '5. Reset', text: 'Tap Reset to clear all numbers and start over.' },
 ];
 
 function RewardedAdGateModal({
   visible,
+  onWatchAd,
   onUpgrade,
-  onKeepFreePlan,
 }: {
   visible: boolean;
+  onWatchAd: () => void;
   onUpgrade: () => void;
-  onKeepFreePlan: () => void;
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade">
       <View style={styles.modalOverlay}>
         <View style={styles.adGateModalContent}>
           <Text style={styles.adGateModalTitle}>{REWARDED_AD_MESSAGES.modalTitle}</Text>
-          <Text style={styles.adGateModalMessage}>{REWARDED_AD_MESSAGES.modalMessage}</Text>
           <View style={styles.adGateModalActions}>
-            <TouchableOpacity style={styles.adGateUpgradeBtn} onPress={onUpgrade}>
-              <Text style={styles.adGateUpgradeText}>{REWARDED_AD_MESSAGES.upgradeToPiratePlan}</Text>
+            <TouchableOpacity style={styles.adGateUpgradePirateBtn} onPress={onUpgrade} activeOpacity={0.85}>
+              <Text style={styles.adGateUpgradePirateText}>{REWARDED_AD_MESSAGES.upgradePirateUnlimited}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.adGateKeepFreeBtn} onPress={onKeepFreePlan}>
-              <Text style={styles.adGateKeepFreeText}>{REWARDED_AD_MESSAGES.keepFreePlan}</Text>
+            <TouchableOpacity style={styles.adGateWatchAdBtn} onPress={onWatchAd} activeOpacity={0.85}>
+              <Text style={styles.adGateWatchAdText}>{REWARDED_AD_MESSAGES.watchAdToContinue}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -470,67 +554,323 @@ function GenerateParamsModal({
   );
 }
 
-const UPGRADE_HINT = 'Upgrade to Pirate plan to remove ads';
+type PendingPickInsight =
+  | { kind: 'main'; n: number; positionSlot: number }
+  | { kind: 'special'; n: number };
+
+function pickTierChipStyles(tier: PositionTier) {
+  switch (tier) {
+    case 'top':
+      return { border: COLORS.success, bg: COLORS.success, text: COLORS.bg };
+    case 'mid':
+      return { border: COLORS.warning, bg: COLORS.warning, text: COLORS.bg };
+    default:
+      return { border: COLORS.error, bg: COLORS.error, text: COLORS.bg };
+  }
+}
+
+function clampInt(x: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.floor(x)));
+}
 
 function PickSlots({
+  lotteryId,
+  payload,
   mainCount,
   mainMin,
   mainMax,
   lines,
   picks,
-  setPickAt,
+  onPicksChange,
+  specialPick,
+  onSpecialPickChange,
   onGenerate,
   onReset,
   generating,
   userPlan,
-  lockFirstNumber,
-  onLockFirstNumberChange,
-  onUpgradeToPirate,
+  pickEvaluationMode,
+  onPickEvaluation,
 }: {
+  lotteryId: LotteryId;
+  payload: CompassPayload | null;
   mainCount: number;
   mainMin: number;
   mainMax: number;
   lines: number[][];
   picks: number[];
-  setPickAt: (idx: number, value: number | '') => void;
+  onPicksChange: (next: number[]) => void;
+  specialPick: number | null;
+  onSpecialPickChange: (n: number | null) => void;
   onGenerate?: () => void;
   onReset?: () => void;
   generating?: boolean;
-  userPlan?: UserPlan;
-  lockFirstNumber?: boolean;
-  onLockFirstNumberChange?: (v: boolean) => void;
-  onUpgradeToPirate?: () => void;
+  userPlan: UserPlan;
+  pickEvaluationMode: 'evaluate' | 'view';
+  onPickEvaluation: () => void;
 }) {
-  const [editingSlot, setEditingSlot] = useState<number | null>(null);
-  const [editingValue, setEditingValue] = useState('');
-  const [showLockFirstHelp, setShowLockFirstHelp] = useState(false);
-  const hint = `${mainCount} numbers (${mainMin}-${mainMax}, ascending, unique)`;
-  const hasFirstPick = picks.some((x) => x > 0);
-  const maxFirstForLock = mainMax - mainCount + 1;
-  const existingPicks = picks.filter((x) => x > 0);
-  const minPick = existingPicks.length > 0 ? Math.min(...existingPicks) : 0;
-  const lockFirstTooHigh = lockFirstNumber && hasFirstPick && minPick > maxFirstForLock;
-  const isAdFree =
-    userPlan === 'pirate' || userPlan === 'pirate_astronaut' || userPlan === 'astronaut';
-  const canGenerate = !lockFirstTooHigh;
+  const { width: screenW } = useWindowDimensions();
+  const [pendingInsight, setPendingInsight] = useState<PendingPickInsight | null>(null);
+  const needsSpecialBall = lotteryId === 'powerball' || lotteryId === 'mega_millions';
+  const mainsComplete = picks.length === mainCount;
+  const canEvaluatePick = mainsComplete && (!needsSpecialBall || specialPick != null);
+  const canGenerate = !generating;
 
-  const commitEdit = useCallback(
-    (idx: number, txt: string) => {
-      const parsed = txt.trim() === '' ? '' : parseInt(txt, 10);
-      if (parsed === '' || (!isNaN(parsed) && parsed >= mainMin && parsed <= mainMax)) {
-        setPickAt(idx, parsed === '' ? '' : parsed);
+  const slotBeingFilled = picks.length < mainCount ? picks.length : null;
+  const { lo, hi } =
+    slotBeingFilled != null
+      ? validRangeForSlot(slotBeingFilled, picks, mainCount, mainMin, mainMax)
+      : { lo: mainMin, hi: mainMax };
+
+  const isChoosingMain = slotBeingFilled != null && lo <= hi;
+
+  // Responsive sizing
+  const contentW = Math.max(280, screenW - SPACING.screenPadding * 2);
+  const slotGap = 8;
+  const slotSize = clampInt((contentW - slotGap * (mainCount - 1)) / mainCount, 36, 52);
+  const chipGap = 10;
+  const desiredChip = 46;
+  const chipCols = clampInt((contentW + chipGap) / (desiredChip + chipGap), 5, 8);
+  const chipSize = clampInt((contentW - chipGap * (chipCols - 1)) / chipCols, 36, 56);
+  const pickGridMaxRows = 4;
+  const pickChoicesMaxHeight = pickGridMaxRows * chipSize + (pickGridMaxRows - 1) * chipGap + 8 + 8;
+
+  const countsForTier =
+    payload && slotBeingFilled != null
+      ? countsForPositionSlot(payload, slotBeingFilled, mainMin, mainMax)
+      : new Array(mainMax - mainMin + 1).fill(0);
+  const tierMap = tierMapForPositionCounts(countsForTier, mainMin, mainMax);
+
+  const choiceNumbers: number[] = [];
+  if (slotBeingFilled != null && lo <= hi) {
+    for (let n = lo; n <= hi; n++) {
+      choiceNumbers.push(n);
+    }
+  }
+
+  const bestCandidateNumber = useMemo(() => {
+    if (!payload || slotBeingFilled == null || !isChoosingMain) return null;
+    let bestN: number | null = null;
+    let bestScore = -Infinity;
+    for (const n of choiceNumbers) {
+      const ts = payload.trendScores.find((x) => x.number === n);
+      const trendStars = trendStarsFromScore(ts?.trendScore);
+      const positionStars = positionStarsForNumber(payload, slotBeingFilled, n, mainMin, mainMax);
+      const shapeStars = shapeStarsForMainCandidate(payload, picks, n, mainMax);
+      const composite = (trendStars + positionStars + shapeStars) / 3;
+      if (bestN == null) {
+        bestScore = composite;
+        bestN = n;
+        continue;
       }
-      setEditingSlot(null);
-    },
-    [mainMin, mainMax, setPickAt]
-  );
+      if (composite > bestScore || (composite === bestScore && n < bestN)) {
+        bestScore = composite;
+        bestN = n;
+      }
+    }
+    return bestN;
+  }, [payload, slotBeingFilled, isChoosingMain, choiceNumbers, mainMin, mainMax, picks, mainMax]);
+
+  const showSpecial = lotteryId === 'powerball' || lotteryId === 'mega_millions';
+  const specialMin = LOTTERY_DEFS[lotteryId]?.special_min ?? 1;
+  const specialMax = LOTTERY_DEFS[lotteryId]?.special_max ?? 0;
+  const specialCounts =
+    showSpecial && payload?.specialFrequency && payload.specialFrequency.min === specialMin && payload.specialFrequency.max === specialMax
+      ? payload.specialFrequency.counts
+      : new Array(Math.max(0, specialMax - specialMin + 1)).fill(0);
+  const specialTierMap =
+    showSpecial && specialMax >= specialMin && specialCounts.length === specialMax - specialMin + 1
+      ? tierMapForCountsInRange(specialCounts, specialMin, specialMax)
+      : new Map<number, PositionTier>();
+
+  const isChoosingSpecial =
+    !isChoosingMain && showSpecial && picks.length >= mainCount && specialMax >= specialMin && specialPick == null;
+
+  const displayedNumbers = useMemo(() => {
+    if (isChoosingMain) return choiceNumbers;
+    if (isChoosingSpecial) return Array.from({ length: specialMax - specialMin + 1 }, (_, i) => specialMin + i);
+    return [];
+  }, [isChoosingMain, choiceNumbers, isChoosingSpecial, specialMin, specialMax]);
+
+  const [pickerScrollY, setPickerScrollY] = useState(0);
+  useEffect(() => {
+    // Reset scroll position state when the picker content changes (slot change / switching main<->special)
+    setPickerScrollY(0);
+  }, [slotBeingFilled, isChoosingMain, isChoosingSpecial, lotteryId]);
+
+  const visibleNumbers = useMemo(() => {
+    const pool = displayedNumbers;
+    if (pool.length === 0) return [];
+    // We know the grid geometry: `chipCols`, `chipSize`, `chipGap`, and the ScrollView viewport height.
+    // Use scroll offset to approximate visible rows so the "jump" hint only targets numbers on screen.
+    const rowH = chipSize + chipGap;
+    const viewH = pickChoicesMaxHeight;
+    const startRow = Math.max(0, Math.floor(pickerScrollY / rowH));
+    const endRow = Math.max(startRow, Math.floor((pickerScrollY + viewH - 1) / rowH));
+    const startIdx = startRow * chipCols;
+    const endExclusive = (endRow + 1) * chipCols;
+    return pool.slice(startIdx, endExclusive);
+  }, [displayedNumbers, pickerScrollY, chipCols, chipSize, chipGap, pickChoicesMaxHeight]);
+
+  const visibleNumbersKey = useMemo(() => visibleNumbers.join(','), [visibleNumbers]);
+
+  const [jumpNumber, setJumpNumber] = useState<number | null>(null);
+  const jumpAnim = useRef(new Animated.Value(0)).current;
+  const lastJumpRef = useRef<number | null>(null);
+
+  const shouldRunJump =
+    pendingInsight == null && (isChoosingMain || isChoosingSpecial) && visibleNumbers.length > 0;
+
+  useEffect(() => {
+    if (!shouldRunJump) {
+      lastJumpRef.current = null;
+      setJumpNumber(null);
+      jumpAnim.stopAnimation();
+      jumpAnim.setValue(0);
+      return;
+    }
+
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const pickNext = () => {
+      if (cancelled) return;
+      const pool = visibleNumbers;
+      if (pool.length === 0) {
+        timeout = setTimeout(pickNext, 2000);
+        return;
+      }
+
+      let next = pool[Math.floor(Math.random() * pool.length)];
+      if (pool.length > 1) {
+        let tries = 0;
+        while (tries < 6 && next === lastJumpRef.current) {
+          next = pool[Math.floor(Math.random() * pool.length)];
+          tries += 1;
+        }
+      }
+
+      lastJumpRef.current = next;
+      setJumpNumber(next);
+      jumpAnim.stopAnimation();
+      jumpAnim.setValue(0);
+
+      const oneBounce = Animated.sequence([
+        Animated.timing(jumpAnim, { toValue: 1, duration: 140, useNativeDriver: true }),
+        Animated.timing(jumpAnim, { toValue: 0, duration: 140, useNativeDriver: true }),
+      ]);
+
+      Animated.sequence([oneBounce, oneBounce, oneBounce]).start(({ finished }) => {
+        if (!finished || cancelled) return;
+        // Hard reset so the last animated button never gets "stuck" mid-transform.
+        jumpAnim.stopAnimation();
+        jumpAnim.setValue(0);
+        setJumpNumber(null);
+        timeout = setTimeout(pickNext, 2000);
+      });
+    };
+
+    pickNext();
+    return () => {
+      cancelled = true;
+      if (timeout) clearTimeout(timeout);
+      jumpAnim.stopAnimation();
+      jumpAnim.setValue(0);
+      setJumpNumber(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldRunJump, visibleNumbersKey]);
+
+  const jumpStyle = {
+    transform: [
+      {
+        translateY: jumpAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }),
+      },
+      {
+        scale: jumpAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.09] }),
+      },
+    ],
+  } as const;
+
+  let insightTitle = '';
+  let trendStars = 3;
+  let positionStars = 3;
+  let shapeStars = 3;
+  if (pendingInsight && payload) {
+    if (pendingInsight.kind === 'main') {
+      const ts = payload.trendScores.find((x) => x.number === pendingInsight.n);
+      trendStars = trendStarsFromScore(ts?.trendScore);
+      positionStars = positionStarsForNumber(payload, pendingInsight.positionSlot, pendingInsight.n, mainMin, mainMax);
+      shapeStars = shapeStarsForMainCandidate(payload, picks, pendingInsight.n, mainMax);
+      insightTitle = `Main (${pendingInsight.positionSlot + 1}) — ${pendingInsight.n}`;
+    } else {
+      trendStars = specialBallFrequencyStars(payload, pendingInsight.n, specialMin, specialMax);
+      positionStars = specialTierStars(specialTierMap.get(pendingInsight.n) ?? 'mid');
+      shapeStars = shapeStarsForSpecialWithMains([...picks].sort((a, b) => a - b), payload.shapeStats, mainMax);
+      const spLabel = lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball';
+      insightTitle = `${spLabel} — ${pendingInsight.n}`;
+    }
+  } else if (pendingInsight) {
+    insightTitle =
+      pendingInsight.kind === 'main'
+        ? `Main (${pendingInsight.positionSlot + 1}) — ${pendingInsight.n}`
+        : `${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} — ${pendingInsight.n}`;
+  }
+
+  const compositeOverall =
+    pendingInsight != null ? ((trendStars + positionStars + shapeStars) / 3).toFixed(1) : '0.0';
+
+  const confirmPickInsight = () => {
+    if (!pendingInsight) return;
+    if (pendingInsight.kind === 'main') {
+      onPicksChange([...picks, pendingInsight.n]);
+    } else {
+      onSpecialPickChange(pendingInsight.n);
+    }
+    setPendingInsight(null);
+  };
+
+  const dismissPickInsight = () => setPendingInsight(null);
+
+  const onTapSlot = (slotIdx: number) => {
+    if (slotIdx < picks.length) {
+      onPicksChange(picks.slice(0, slotIdx));
+    }
+  };
+
+  const canUndo = picks.length > 0 || specialPick != null;
+  const handleUndo = () => {
+    if (specialPick != null) {
+      onSpecialPickChange(null);
+      return;
+    }
+    if (picks.length > 0) {
+      onPicksChange(picks.slice(0, -1));
+    }
+  };
+
+  const handleCopy = async () => {
+    const main = [...picks].sort((a, b) => a - b);
+    const def = LOTTERY_DEFS[lotteryId];
+    const spLabel = lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball';
+    const text =
+      showSpecial && specialPick != null
+        ? `${def?.name ?? lotteryId}: ${main.join(' ')} | ${spLabel}: ${specialPick}`
+        : `${def?.name ?? lotteryId}: ${main.join(' ')}`;
+    try {
+      // Dynamic import to avoid hard crash when the native module
+      // isn't present in the current dev client build.
+      const Clipboard = await import('expo-clipboard');
+      await Clipboard.setStringAsync(text);
+      Alert.alert('Copied', 'Pick copied to clipboard.');
+    } catch {
+      // Fallback: show the pick so user can long-press copy.
+      Alert.alert('Copy', text);
+    }
+  };
 
   return (
     <View style={styles.pickSlotsWrap}>
-      <Text style={styles.pickSlotsHint}>{hint}</Text>
-      {!hasFirstPick && (
-        <Text style={styles.generateHint}>Enter at least one number (or more) first, then tap Generate number.</Text>
-      )}
+      {/* Intentionally minimal UI (no helper paragraph). */}
       {lines.map((line, lineIdx) => (
         <View key={lineIdx} style={[styles.pickSlotsRow, styles.pickSlotsRowMax6, styles.completedLineRow]}>
           {line.map((n, i) => (
@@ -541,269 +881,271 @@ function PickSlots({
         </View>
       ))}
       <View style={styles.pickSlotsCol}>
-        {Array.from({ length: Math.ceil(mainCount / 6) }, (_, rowIdx) => (
-          <View key={rowIdx} style={styles.pickSlotsRow}>
-            {Array.from({ length: Math.min(6, mainCount - rowIdx * 6) }, (_, colIdx) => {
-              const i = rowIdx * 6 + colIdx;
-              const val = editingSlot === i ? editingValue : (picks[i] ? String(picks[i]) : '');
-              return (
-                <View key={i} style={styles.pickSlot}>
-                  <TextInput
-                    style={styles.pickSlotInput}
-                    value={val}
-                    onChangeText={(txt) => {
-                      const digits = txt.replace(/\D/g, '');
-                      if (editingSlot !== i) return;
-                      if (digits === '') {
-                        setEditingValue('');
-                        return;
-                      }
-                      const num = parseInt(digits, 10);
-                      if (!isNaN(num) && num >= mainMin && num <= mainMax) {
-                        setEditingValue(digits);
-                      }
-                    }}
-                    onFocus={() => {
-                      setEditingSlot(i);
-                      setEditingValue(picks[i] ? String(picks[i]) : '');
-                    }}
-                    onBlur={() => {
-                      if (editingSlot === i) commitEdit(i, editingValue);
-                    }}
-                    keyboardType="number-pad"
-                    placeholder=""
-                    placeholderTextColor={COLORS.textMuted}
-                    maxLength={String(mainMax).length}
-                    selectTextOnFocus
-                  />
+        <Text style={styles.mainLabel}>Main</Text>
+        <View style={[styles.pickSlotsRow, styles.pickSlotsRowTop]}>
+          {Array.from({ length: mainCount }, (_, i) => {
+            const filled = picks[i];
+            const isFuture = i > picks.length;
+            const isActiveSlot = slotBeingFilled != null && i === slotBeingFilled;
+            return (
+              <TouchableOpacity
+                key={i}
+                style={[
+                  styles.pickSlot,
+                  styles.pickSlotTouchable,
+                  filled ? styles.pickSlotFilled : styles.pickSlotEmpty,
+                  isFuture && styles.pickSlotFuture,
+                  isActiveSlot && styles.pickSlotActive,
+                  { width: slotSize, height: slotSize, borderRadius: Math.max(10, Math.round(slotSize * 0.22)) },
+                ]}
+                onPress={() => onTapSlot(i)}
+                disabled={isFuture}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.pickSlotText, isFuture && styles.pickSlotFutureText]}>
+                  {filled != null ? String(filled) : '—'}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        {onReset && (
+          <View
+            style={[
+              styles.pickActionsRow,
+              showSpecial ? styles.pickActionsRowWithSpecial : styles.pickActionsRowCentered,
+            ]}
+          >
+            {showSpecial && specialMax >= specialMin && (
+              <View style={styles.specialInline}>
+                <Text style={styles.specialInlineLabel}>{lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'}</Text>
+                <View style={styles.specialInlineValueBox}>
+                  <Text style={styles.specialInlineValueText}>{specialPick != null ? String(specialPick) : '—'}</Text>
                 </View>
-              );
-            })}
-            {rowIdx === Math.ceil(mainCount / 6) - 1 && onReset && (
+              </View>
+            )}
+            <View style={styles.actionsRight}>
+              <TouchableOpacity
+                style={[styles.undoBtn, !canUndo && styles.actionBtnDisabled]}
+                onPress={handleUndo}
+                disabled={!canUndo}
+              >
+                <Ionicons name="arrow-undo" size={18} color={COLORS.textSecondary} style={styles.generateIcon} />
+                {!showSpecial && <Text style={styles.resetBtnText}>Undo</Text>}
+              </TouchableOpacity>
               <TouchableOpacity style={styles.resetBtn} onPress={onReset}>
                 <Ionicons name="refresh" size={18} color={COLORS.textSecondary} style={styles.generateIcon} />
-                <Text style={styles.resetBtnText}>Reset</Text>
+                {!showSpecial && <Text style={styles.resetBtnText}>Reset</Text>}
               </TouchableOpacity>
-            )}
-          </View>
-        ))}
-        {onLockFirstNumberChange && (
-          <View style={styles.lockFirstRow}>
-            <TouchableOpacity
-              style={styles.lockFirstTouch}
-              onPress={() => onLockFirstNumberChange(!lockFirstNumber)}
-              activeOpacity={0.7}
-            >
-              <Ionicons name={lockFirstNumber ? 'lock-closed' : 'lock-open-outline'} size={18} color={lockFirstNumber ? COLORS.gold : COLORS.textMuted} />
-              <Text style={[styles.lockFirstText, lockFirstNumber && styles.lockFirstTextActive]}>Lock first number</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowLockFirstHelp(true)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.lockFirstHelpBtn}>
-              <Ionicons name="help-circle-outline" size={18} color={COLORS.textMuted} />
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.copyBtn, (!picks.length && specialPick == null) && styles.actionBtnDisabled]}
+                onPress={handleCopy}
+                disabled={!picks.length && specialPick == null}
+              >
+                <Ionicons name="copy-outline" size={18} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </View>
           </View>
         )}
-        {showLockFirstHelp && (
-          <Modal visible transparent animationType="fade">
-            <TouchableOpacity style={styles.helpOverlay} activeOpacity={1} onPress={() => setShowLockFirstHelp(false)}>
-              <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.helpPopup}>
-                <Text style={styles.helpPopupTitle}>Lock first number</Text>
-                <Text style={styles.helpPopupText}>
-                  When enabled, the generated numbers will all be ≥ your smallest entered number. Your first number (the minimum) is locked; the rest are filled by Compass.
+
+        {(() => {
+          const showMainPicker = isChoosingMain;
+          const showSpecialPicker =
+            !showMainPicker && showSpecial && picks.length >= mainCount && specialMax >= specialMin;
+
+          if (showMainPicker) {
+            return (
+              <>
+                <Text style={styles.pickChoicesTitle}>
+                  Pick position {slotBeingFilled! + 1} ({lo}-{hi})
                 </Text>
-                <Text style={styles.helpPopupText}>
-                  To avoid wasting a generate, your first number must be ≤{maxFirstForLock} so there's enough room to fill the remaining slots.
+                <ScrollView
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}
+                  style={[styles.pickChoicesScroll, { maxHeight: pickChoicesMaxHeight }]}
+                  contentContainerStyle={styles.pickChoicesScrollContent}
+                  onScroll={(e) => setPickerScrollY(e.nativeEvent.contentOffset.y)}
+                  scrollEventThrottle={16}
+                >
+                  <View style={[styles.pickChoicesGrid, { gap: chipGap }]}>
+                    {choiceNumbers.map((n) => {
+                      const tier = tierMap.get(n) ?? 'mid';
+                      const cs = pickTierChipStyles(tier);
+                      const isBest = bestCandidateNumber != null && n === bestCandidateNumber;
+                      const isJumping = jumpNumber != null && n === jumpNumber;
+                      return (
+                        <AnimatedTouchableOpacity
+                          key={n}
+                          style={[
+                            styles.pickChoiceChip,
+                            isBest && styles.pickChoiceChipBest,
+                            isJumping && jumpStyle,
+                            {
+                              width: chipSize,
+                              height: chipSize,
+                              borderRadius: Math.max(10, Math.round(chipSize * 0.22)),
+                              borderColor: cs.border,
+                              backgroundColor: isBest ? '#9dffb3' : cs.bg,
+                            },
+                          ]}
+                          onPress={() =>
+                            slotBeingFilled != null &&
+                            setPendingInsight({ kind: 'main', n, positionSlot: slotBeingFilled })
+                          }
+                          activeOpacity={0.8}
+                        >
+                          <Text style={[styles.pickChoiceChipText, { color: isBest ? COLORS.bg : cs.text }]}>{n}</Text>
+                        </AnimatedTouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </>
+            );
+          }
+
+          if (showSpecialPicker) {
+            return (
+              <>
+                <Text style={styles.pickChoicesTitle}>
+                  Pick {lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} ({specialMin}-{specialMax})
                 </Text>
-                <TouchableOpacity style={styles.helpPopupBtn} onPress={() => setShowLockFirstHelp(false)}>
-                  <Text style={styles.helpPopupBtnText}>Got it</Text>
-                </TouchableOpacity>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          </Modal>
+                <ScrollView
+                  nestedScrollEnabled
+                  showsVerticalScrollIndicator={false}
+                  style={[styles.pickChoicesScroll, { maxHeight: pickChoicesMaxHeight }]}
+                  contentContainerStyle={styles.pickChoicesScrollContent}
+                  onScroll={(e) => setPickerScrollY(e.nativeEvent.contentOffset.y)}
+                  scrollEventThrottle={16}
+                >
+                  <View style={[styles.pickChoicesGrid, { gap: chipGap }]}>
+                    {Array.from({ length: specialMax - specialMin + 1 }, (_, i) => specialMin + i).map((n) => {
+                      const tier = specialTierMap.get(n) ?? 'mid';
+                      const cs = pickTierChipStyles(tier);
+                      const isJumping = jumpNumber != null && n === jumpNumber;
+                      return (
+                        <AnimatedTouchableOpacity
+                          key={`sp-${n}`}
+                          style={[
+                            styles.pickChoiceChip,
+                            isJumping && jumpStyle,
+                            {
+                              width: chipSize,
+                              height: chipSize,
+                              borderRadius: Math.max(10, Math.round(chipSize * 0.22)),
+                              borderColor: cs.border,
+                              backgroundColor: cs.bg,
+                              opacity: 1,
+                            },
+                          ]}
+                          onPress={() => setPendingInsight({ kind: 'special', n })}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={[styles.pickChoiceChipText, { color: cs.text }]}>{n}</Text>
+                        </AnimatedTouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </>
+            );
+          }
+
+          return null;
+        })()}
+
+        {slotBeingFilled != null && lo > hi && (
+          <Text style={styles.pickChoicesError}>No valid numbers for this slot — tap an earlier slot or Reset.</Text>
+        )}
+
+        {picks.length >= mainCount && (
+          <Text style={styles.pickLineComplete}>Line complete. Tap a filled slot to change from there.</Text>
         )}
         {onGenerate && (
           <View style={styles.generateWrap}>
-            {!isAdFree && onUpgradeToPirate && (
-              <TouchableOpacity onPress={onUpgradeToPirate} style={styles.upgradeHintTouch}>
-                <Text style={styles.upgradeHintLink}>{UPGRADE_HINT}</Text>
+            <View style={styles.generateBtnRow}>
+              <TouchableOpacity
+                style={[styles.evaluateBtn, !canEvaluatePick && styles.actionBtnDisabled]}
+                onPress={onPickEvaluation}
+                disabled={!canEvaluatePick}
+              >
+                <Ionicons name="analytics-outline" size={18} color={COLORS.gold} style={styles.generateIcon} />
+                <Text style={styles.evaluateBtnText} numberOfLines={2}>
+                  {pickEvaluationMode === 'view' ? 'View evaluation' : 'Evaluate current pick'}
+                </Text>
               </TouchableOpacity>
-            )}
-            {lockFirstTooHigh && (
-              <Text style={styles.generateCountdown}>
-                First number must be ≤{maxFirstForLock} when Lock first number is on, or you'll waste a generate.
-              </Text>
-            )}
-            <TouchableOpacity
-              style={[styles.generateBtn, (!canGenerate || generating) && styles.generateBtnDisabled]}
-              onPress={onGenerate}
-              disabled={!canGenerate || generating}
-            >
-              {generating ? (
-                <ActivityIndicator size="small" color={COLORS.gold} />
-              ) : (
-                <>
-                  <Ionicons name="sparkles" size={18} color={COLORS.gold} style={styles.generateIcon} />
-                  <Text style={styles.generateBtnText}>Generate number</Text>
-                </>
-              )}
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.generateBtn, styles.generateBtnFlex, !canGenerate && styles.generateBtnDisabled]}
+                onPress={onGenerate}
+                disabled={!canGenerate}
+              >
+                {generating ? (
+                  <ActivityIndicator size="small" color={COLORS.gold} />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={18} color={COLORS.gold} style={styles.generateIcon} />
+                    <Text style={styles.generateBtnText} numberOfLines={2}>
+                      Smart generate
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+            <Modal visible={pendingInsight != null} transparent animationType="fade">
+              <TouchableOpacity style={styles.helpOverlay} activeOpacity={1} onPress={dismissPickInsight}>
+                <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} style={styles.pickInsightModalCard}>
+                  <View style={styles.pickInsightHeaderRow}>
+                    <Text style={styles.pickInsightTitle} numberOfLines={3}>
+                      {insightTitle}
+                    </Text>
+                    <View style={styles.pickInsightCompositeWrap}>
+                      <Text style={styles.pickInsightCompositeText}>{compositeOverall}</Text>
+                      <Ionicons name="star" size={20} color={COLORS.gold} />
+                    </View>
+                  </View>
+                  <InsightStarRow label="Trend" stars={trendStars} />
+                  <InsightStarRow label="Position" stars={positionStars} />
+                  <InsightStarRow label="Shape" stars={shapeStars} />
+                  <BannerAdPlaceholder
+                    testId="compass-pick-insight"
+                    userPlan={userPlan}
+                    containerStyle={styles.pickInsightBanner}
+                  />
+                  <TouchableOpacity style={styles.pickInsightDoneBtn} onPress={confirmPickInsight}>
+                    <Text style={styles.pickInsightDoneText}>Done</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            </Modal>
           </View>
         )}
       </View>
-    </View>
-  );
-}
-
-function TrendsTab({
-  payload,
-  searchNum,
-  setSearchNum,
-  maxRange,
-  onAddNumber,
-  userPlan,
-}: {
-  payload: CompassPayload;
-  searchNum: string;
-  setSearchNum: (s: string) => void;
-  maxRange: number;
-  onAddNumber?: (n: number) => void;
-  userPlan: UserPlan;
-}) {
-  const filtered = payload.trendScores
-    .filter((t) => {
-      if (!searchNum.trim()) return true;
-      const n = parseInt(searchNum, 10);
-      return !isNaN(n) && t.number === n;
-    })
-    .sort((a, b) => b.trendScore - a.trendScore);
-  return (
-    <View style={styles.tabContent}>
-      <Text style={styles.trendLegend}>{TREND_LEGEND}</Text>
-      <TextInput
-        style={styles.searchInput}
-        placeholder="Search number"
-        placeholderTextColor={COLORS.textMuted}
-        value={searchNum}
-        onChangeText={setSearchNum}
-        keyboardType="number-pad"
-      />
-      <ScrollView style={styles.trendList} nestedScrollEnabled>
-        {filtered.slice(0, 50).map((t) => (
-          <TrendRow key={t.number} t={t} onAddNumber={onAddNumber} />
-        ))}
-      </ScrollView>
-      {filtered.length > 50 && <Text style={styles.moreHint}>Showing first 50. Use search for specific.</Text>}
-      <BannerAdPlaceholder testId="compass-trends" userPlan={userPlan} />
-    </View>
-  );
-}
-
-function TrendRow({ t, onAddNumber }: { t: NumberTrendScore; onAddNumber?: (n: number) => void }) {
-  const levelColor = t.level === 'HIGH' ? COLORS.success : t.level === 'LOW' ? COLORS.warning : COLORS.textSecondary;
-  return (
-    <View style={styles.trendRow}>
-      <TouchableOpacity
-        style={[styles.ball, { borderColor: levelColor }]}
-        onPress={() => onAddNumber?.(t.number)}
-        activeOpacity={0.7}
-        disabled={!onAddNumber}
-      >
-        <Text style={styles.ballText}>{t.number}</Text>
-      </TouchableOpacity>
-      <View style={styles.trendInfo}>
-        <Text style={styles.trendScore}>Score: {t.trendScore.toFixed(0)} ({t.level})</Text>
-        <Text style={styles.trendSub}>Recent: {t.recentActivity.toFixed(2)}</Text>
-        <Text style={styles.trendSub}>Long dev: {t.longTermDeviation.toFixed(2)}</Text>
-      </View>
-    </View>
-  );
-}
-
-function PositionsTab({
-  payload,
-  selectedPos,
-  setSelectedPos,
-  picksPerDraw,
-  onAddNumber,
-  userPlan,
-}: {
-  payload: CompassPayload;
-  selectedPos: number;
-  setSelectedPos: (n: number) => void;
-  picksPerDraw: number;
-  onAddNumber?: (n: number) => void;
-  userPlan: UserPlan;
-}) {
-  const posData = payload.positionTopK.find((p) => p.position === selectedPos);
-  return (
-    <View style={styles.tabContent}>
-      <Text style={styles.positionNote}>{POSITION_NOTE}</Text>
-      <View style={styles.posPicker}>
-        {Array.from({ length: picksPerDraw }, (_, i) => i + 1).map((p) => (
-          <TouchableOpacity
-            key={p}
-            style={[styles.posChip, selectedPos === p && styles.posChipActive]}
-            onPress={() => setSelectedPos(p)}
-          >
-            <Text style={styles.posChipText}>{p}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {posData && (
-        <View style={styles.posResult}>
-          <Text style={styles.posTitle}>Position {selectedPos} most frequent</Text>
-          <Text style={styles.posTop}>Top: {posData.topNumber}</Text>
-          <View style={styles.topKRow}>
-            {posData.topKList.map(({ number, count }) => (
-              <TouchableOpacity
-                key={number}
-                style={styles.topKItem}
-                onPress={() => onAddNumber?.(number)}
-                activeOpacity={0.7}
-                disabled={!onAddNumber}
-              >
-                <Text style={styles.topKNum}>{number}</Text>
-                <Text style={styles.topKCount}>{count}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
-      <BannerAdPlaceholder testId="compass-positions" userPlan={userPlan} />
-    </View>
-  );
-}
-
-function ShapeTab({ payload, userPlan }: { payload: CompassPayload; userPlan: UserPlan }) {
-  const s = payload.shapeStats;
-  return (
-    <View style={styles.tabContent}>
-      <Text style={styles.shapeHint}>Typical ranges from historical draws (reference only)</Text>
-      <View style={styles.shapeCard}>
-        <Text style={styles.shapeLabel}>Odd / Even</Text>
-        <Text style={styles.shapeValue}>Odd: {s.oddEven.odd.min}-{s.oddEven.odd.max} per draw</Text>
-        <Text style={styles.shapeValue}>Even: {s.oddEven.even.min}-{s.oddEven.even.max} per draw</Text>
-      </View>
-      <View style={styles.shapeCard}>
-        <Text style={styles.shapeLabel}>Low / High split</Text>
-        <Text style={styles.shapeValue}>Low: {s.lowHigh.low.min}-{s.lowHigh.low.max}</Text>
-        <Text style={styles.shapeValue}>High: {s.lowHigh.high.min}-{s.lowHigh.high.max}</Text>
-      </View>
-      <View style={styles.shapeCard}>
-        <Text style={styles.shapeLabel}>Sum range</Text>
-        <Text style={styles.shapeValue}>{s.sum.min} - {s.sum.max}</Text>
-      </View>
-      <View style={styles.shapeCard}>
-        <Text style={styles.shapeLabel}>Max gap (typical)</Text>
-        <Text style={styles.shapeValue}>{s.gaps.min} - {s.gaps.max}</Text>
-      </View>
-      <BannerAdPlaceholder testId="compass-shape" userPlan={userPlan} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrap: { flex: 1, backgroundColor: COLORS.bg },
   container: { flex: 1, backgroundColor: COLORS.bg },
+  compassBannerDock: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.bgElevated,
+    backgroundColor: COLORS.bg,
+    paddingTop: 8,
+    paddingHorizontal: SPACING.screenPadding,
+    paddingBottom: 8,
+    alignItems: 'center',
+  },
+  compassBannerAd: { marginVertical: 0, marginBottom: 0 },
   content: { paddingHorizontal: SPACING.screenPadding },
+  stickyHeader: {
+    backgroundColor: COLORS.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgElevated,
+    paddingBottom: 8,
+    zIndex: 2,
+    elevation: 4,
+  },
   headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   titleIcon: { marginRight: 10 },
   title: { fontSize: 24, fontWeight: '700', color: COLORS.text },
@@ -811,24 +1153,187 @@ const styles = StyleSheet.create({
   headerBookBtn: {},
   usageHint: { color: COLORS.textMuted, fontSize: 12, marginBottom: 8 },
   label: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
-  lotteryRow: { marginBottom: 16 },
-  lotteryScroll: { flexDirection: 'row', marginTop: 4 },
-  lotteryChip: {
+  lotteryDropdownWrap: { marginBottom: 0, zIndex: 3 },
+  lotteryDropdownTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingVertical: 12,
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: COLORS.bgCard,
-    marginRight: 8,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    gap: 10,
   },
-  lotteryChipActive: { backgroundColor: COLORS.primary },
-  lotteryChipText: { color: COLORS.text, fontSize: 14 },
+  lotteryDropdownTriggerText: { color: COLORS.text, fontSize: 15, fontWeight: '600', flex: 1 },
+  lotteryDropdownMenu: {
+    marginTop: 6,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.bgCard,
+    overflow: 'hidden',
+  },
+  lotteryDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgCard,
+  },
+  lotteryDropdownItemLast: { borderBottomWidth: 0 },
+  lotteryDropdownItemActive: { backgroundColor: 'rgba(79, 70, 229, 0.18)' },
+  lotteryDropdownItemText: { color: COLORS.textSecondary, fontSize: 14, fontWeight: '500', flex: 1 },
+  lotteryDropdownItemTextActive: { color: COLORS.text, fontWeight: '600' },
   pickSlotsWrap: { marginBottom: 16 },
-  pickSlotsHint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
+  pickChoicesTitle: {
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  pickChoicesScroll: { maxHeight: 280 },
+  pickChoicesScrollContent: { paddingBottom: 8 },
+  pickChoicesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    alignItems: 'center',
+  },
+  pickChoiceChip: {
+    minWidth: 42,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickChoiceChipBest: {
+    shadowColor: '#34d399',
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+    transform: [{ scale: 1.03 }],
+  },
+  pickChoiceChipText: { fontSize: 15, fontWeight: '700' },
+  pickChoicesError: { color: COLORS.warning, fontSize: 13, marginTop: 8 },
+  pickLineComplete: { color: COLORS.textMuted, fontSize: 13, marginTop: 8 },
+  pickSlotTouchable: {},
+  pickSlotFilled: { borderColor: COLORS.gold },
+  pickSlotEmpty: { borderColor: COLORS.gray700 },
+  pickSlotFuture: { opacity: 0.35 },
+  pickSlotActive: {
+    borderWidth: 2,
+    borderColor: COLORS.gold,
+    backgroundColor: 'rgba(212, 175, 55, 0.12)',
+  },
+  pickSlotFutureText: { color: COLORS.textMuted },
   pickSlotsCol: { flexDirection: 'column', gap: 8 },
   pickSlotsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  pickSlotsRowTop: { justifyContent: 'space-between', flexWrap: 'nowrap' },
+  mainLabel: { color: COLORS.textSecondary, fontSize: 12, fontWeight: '700', marginTop: 2, marginBottom: 2 },
+  pickActionsRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', marginTop: 2 },
+  pickActionsRowWithSpecial: { justifyContent: 'space-between' },
+  pickActionsRowCentered: { justifyContent: 'center' },
+  actionsRight: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 10 },
+  actionBtnDisabled: { opacity: 0.5 },
+  specialInline: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
+  specialInlineLabel: { color: COLORS.textSecondary, fontSize: 12, fontWeight: '700' },
+  specialInlineValueBox: {
+    minWidth: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.gray700,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  specialInlineValueText: { color: COLORS.text, fontSize: 14, fontWeight: '700' },
   pickSlotsRowMax6: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center', maxWidth: '100%' },
   completedLineRow: { marginBottom: 8 },
+  generateBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
+    width: '100%',
+  },
+  evaluateBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.gray700,
+    minHeight: 44,
+  },
+  evaluateBtnText: {
+    color: COLORS.gold,
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    flexShrink: 1,
+  },
   generateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    minHeight: 44,
+  },
+  generateBtnFlex: { flex: 1 },
+  generateBtnDisabled: { opacity: 0.5 },
+  helpOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  helpPopup: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 20, maxWidth: 320 },
+  helpPopupTitle: { color: COLORS.text, fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  helpPopupText: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 8 },
+  helpPopupBtn: { alignSelf: 'flex-end', marginTop: 12, paddingVertical: 8, paddingHorizontal: 16 },
+  helpPopupBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },
+  pickInsightModalCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 12,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+  },
+  pickInsightHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  pickInsightTitle: { flex: 1, color: COLORS.text, fontSize: 17, fontWeight: '700', lineHeight: 22 },
+  pickInsightCompositeWrap: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingTop: 2 },
+  pickInsightCompositeText: { color: COLORS.gold, fontSize: 20, fontWeight: '700' },
+  pickInsightBanner: { marginTop: 4, marginBottom: 12 },
+  pickInsightDoneBtn: {
+    paddingVertical: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.gold,
+    alignItems: 'center',
+  },
+  pickInsightDoneText: { color: COLORS.bg, fontSize: 16, fontWeight: '700' },
+  generateIcon: { marginRight: 6 },
+  generateBtnText: { color: COLORS.gold, fontSize: 13, fontWeight: '600', textAlign: 'center', flexShrink: 1 },
+  resetBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
@@ -836,24 +1341,20 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: COLORS.gold,
+    borderColor: COLORS.gray700,
     minHeight: 44,
   },
-  generateBtnDisabled: { opacity: 0.5 },
-  lockFirstRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  lockFirstTouch: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  lockFirstHelpBtn: { padding: 4 },
-  lockFirstText: { color: COLORS.textMuted, fontSize: 13 },
-  lockFirstTextActive: { color: COLORS.gold },
-  helpOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  helpPopup: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 20, maxWidth: 320 },
-  helpPopupTitle: { color: COLORS.text, fontSize: 16, fontWeight: '600', marginBottom: 12 },
-  helpPopupText: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 8 },
-  helpPopupBtn: { alignSelf: 'flex-end', marginTop: 12, paddingVertical: 8, paddingHorizontal: 16 },
-  helpPopupBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },
-  generateIcon: { marginRight: 6 },
-  generateBtnText: { color: COLORS.gold, fontSize: 13, fontWeight: '600' },
-  resetBtn: {
+  copyBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.gray700,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  undoBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
@@ -866,12 +1367,8 @@ const styles = StyleSheet.create({
   },
   resetBtnText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: '600' },
   pickSlot: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
     backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: COLORS.gray700,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
@@ -882,11 +1379,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  generateHint: { color: COLORS.textMuted, fontSize: 13, marginBottom: 12 },
-  generateWrap: { flexDirection: 'column', alignItems: 'flex-start', gap: 4 },
-  upgradeHintTouch: { marginBottom: 8 },
-  upgradeHintLink: { color: COLORS.gold, fontSize: 12, fontWeight: '600' },
-  generateCountdown: { color: COLORS.warning, fontSize: 12, fontWeight: '600' },
+  generateWrap: { flexDirection: 'column', alignItems: 'stretch', gap: 8, width: '100%' },
   adGateModalContent: {
     backgroundColor: COLORS.bgCard,
     borderRadius: 16,
@@ -894,27 +1387,12 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 340,
   },
-  adGateModalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 12 },
-  adGateModalMessage: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 20, marginBottom: 20 },
-  adGateModalActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'stretch', gap: 12 },
-  adGateUpgradeBtn: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 44,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: COLORS.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  adGateUpgradeText: { color: COLORS.bg, fontSize: 13, fontWeight: '700', textAlign: 'center' },
-  adGateKeepFreeBtn: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 44,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  adGateModalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 20, textAlign: 'center' },
+  adGateModalActions: { flexDirection: 'column', alignItems: 'stretch', gap: 12 },
+  adGateWatchAdBtn: {
+    minHeight: 48,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 10,
     backgroundColor: COLORS.bgElevated,
     borderWidth: 1,
@@ -922,20 +1400,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  adGateKeepFreeText: { color: COLORS.textMuted, fontSize: 13, fontWeight: '600', textAlign: 'center' },
-  pickSlotInput: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: '600',
-    textAlign: 'center',
-    padding: 0,
-    margin: 0,
-    width: 44,
-    height: 44,
-    minWidth: 44,
-    minHeight: 44,
-    outlineStyle: 'none',
+  adGateWatchAdText: { color: COLORS.text, fontSize: 14, fontWeight: '600', textAlign: 'center' },
+  adGateUpgradePirateBtn: {
+    minHeight: 48,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: COLORS.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  adGateUpgradePirateText: { color: COLORS.bg, fontSize: 15, fontWeight: '700', textAlign: 'center' },
   loadingBox: { alignItems: 'center', paddingVertical: 48 },
   loadingText: { color: COLORS.textMuted, marginTop: 12 },
   warnBox: {
@@ -946,76 +1421,6 @@ const styles = StyleSheet.create({
   },
   warnText: { color: COLORS.warning, fontWeight: '600', marginTop: 8 },
   warnSub: { color: COLORS.textMuted, fontSize: 12, marginTop: 4 },
-  tabRow: { flexDirection: 'row', marginBottom: 16 },
-  tab: { paddingVertical: 10, paddingHorizontal: 16, marginRight: 8 },
-  tabActive: { borderBottomWidth: 2, borderBottomColor: COLORS.gold },
-  tabText: { color: COLORS.textMuted },
-  tabTextActive: { color: COLORS.gold, fontWeight: '600' },
-  tabContent: { marginBottom: 24 },
-  trendLegend: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    marginBottom: 12,
-    lineHeight: 16,
-  },
-  searchInput: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 8,
-    padding: 12,
-    color: COLORS.text,
-    marginBottom: 12,
-  },
-  trendList: { maxHeight: 400 },
-  trendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
-  ball: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  ballText: { color: COLORS.text, fontWeight: '700' },
-  trendInfo: { flex: 1 },
-  trendScore: { color: COLORS.text, fontWeight: '600' },
-  trendSub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
-  moreHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 8 },
-  positionNote: { color: COLORS.textMuted, fontSize: 11, marginBottom: 12 },
-  posPicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 },
-  posChip: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.bgCard,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  posChipActive: { backgroundColor: COLORS.primary },
-  posChipText: { color: COLORS.text, fontWeight: '600' },
-  posResult: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 16 },
-  posTitle: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 8 },
-  posTop: { color: COLORS.gold, fontSize: 18, fontWeight: '700', marginBottom: 12 },
-  topKRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  topKItem: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.bgElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topKNum: { color: COLORS.text, fontWeight: '700' },
-  topKCount: { color: COLORS.textMuted, fontSize: 10 },
-  shapeHint: { color: COLORS.textMuted, fontSize: 11, marginBottom: 12 },
-  shapeCard: {
-    backgroundColor: COLORS.bgCard,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 10,
-  },
-  shapeLabel: { color: COLORS.gold, fontSize: 12, marginBottom: 6 },
-  shapeValue: { color: COLORS.text, fontSize: 14 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',

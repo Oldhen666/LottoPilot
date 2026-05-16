@@ -23,7 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import * as ImagePicker from 'expo-image-picker';
 import { useDraws, invalidateDrawsCache } from '../hooks/useDraws';
-import { fetchDrawByDate } from '../services/supabase';
+import { fetchDrawByDate, resolveDrawExtraNumber } from '../services/supabase';
 import { LOTTERY_DEFS } from '../constants/lotteries';
 import { PRIZE_EXPLANATIONS } from '../constants/prizeExplanations';
 import { checkTicket } from '../utils/check';
@@ -43,6 +43,44 @@ import type { LotteryId } from '../types/lottery';
 import type { CurrentJurisdiction } from '../types/jurisdiction';
 import type { AddOnCatalogItem, AddOnsSelected, AddOnsInputs } from '../types/addOn';
 
+/** Shown as one optional "Extra" row in Check UI; state keys stay EXTRA / ENCORE / TAG for OCR & DB. */
+const INDEPENDENT_ADD_ON_CODES = ['EXTRA', 'ENCORE', 'TAG'] as const;
+type IndependentAddOnCode = (typeof INDEPENDENT_ADD_ON_CODES)[number];
+
+function isIndependentAddOnCode(code: string): code is IndependentAddOnCode {
+  return (INDEPENDENT_ADD_ON_CODES as readonly string[]).includes(code);
+}
+
+const EXTRA_ADDON_UI_LABEL = 'EXTRA';
+/**
+ * Debug UI gate (thumbnails + rawText).
+ * Default OFF even in dev; enable manually by setting `globalThis.test_dev = true` and reloading.
+ */
+const SHOW_OCR_DEBUG_UI =
+  __DEV__ && !!(globalThis as unknown as { test_dev?: boolean; __LP_test_dev?: boolean }).test_dev;
+
+function inferIndependentAddOnCode(lotteryId: LotteryId, jurisdictionCode: string): IndependentAddOnCode | null {
+  if (lotteryId !== 'lotto_max' && lotteryId !== 'lotto_649') return null;
+  const jc = String(jurisdictionCode ?? '');
+  // Ontario: Encore (7 digits)
+  if (jc.startsWith('CA-ON')) return 'ENCORE';
+  // Atlantic: TAG (6 digits) nightly companion
+  if (jc.startsWith('CA-NB') || jc.startsWith('CA-NS') || jc.startsWith('CA-PE') || jc.startsWith('CA-NL')) return 'TAG';
+  // Default: EXTRA (WCLC/QC/BC etc.)
+  return 'EXTRA';
+}
+
+function schemaForOrphanIndependentAddOn(
+  code: IndependentAddOnCode,
+  jurisdictionCode: string
+): { digits: number; displayGroups?: number[]; groupSeparator?: string } {
+  if (code === 'TAG') return { digits: 6 };
+  if (code === 'ENCORE') return { digits: 7 };
+  if (code === 'EXTRA' && jurisdictionCode.startsWith('CA-BC'))
+    return { digits: 8, displayGroups: [2, 2, 2, 2], groupSeparator: '-' };
+  return { digits: 7 };
+}
+
 const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
 const MIN_FLEX_LINES = 3;
 const MAX_UI_LINES = 10;
@@ -57,11 +95,10 @@ interface Props {
   jurisdiction?: CurrentJurisdiction | null;
   jurisdictionCode?: string | null;
   initialRecordId?: string | null;
+  /** Increment to force-reset scan/OCR UI state (used after exiting Result screen). */
+  resetNonce?: number;
   onBack: () => void;
   onResult: (recordId: string) => void;
-  /** First-run coach mark: highlight scan / upload row */
-  checkTourStep?: 2;
-  onCheckTourHighlight?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 }
 
 function parseNumbers(str: string, max: number, minVal?: number, maxVal?: number): number[] {
@@ -86,10 +123,9 @@ export default function CheckTicketScreen({
   jurisdiction,
   jurisdictionCode,
   initialRecordId,
+  resetNonce,
   onBack,
   onResult,
-  checkTourStep,
-  onCheckTourHighlight,
 }: Props) {
   const { plan } = useEntitlements();
   const [lotteryId, setLotteryId] = useState<LotteryId>(preselectedLottery);
@@ -114,6 +150,7 @@ export default function CheckTicketScreen({
   const [addOnsInputs, setAddOnsInputs] = useState<AddOnsInputs>({});
   const [showPrizeModal, setShowPrizeModal] = useState(false);
   const [ocrRawText, setOcrRawText] = useState<string | null>(null);
+  const [ocrAddOnsDebug, setOcrAddOnsDebug] = useState<string | null>(null);
   const [showOcrLog, setShowOcrLog] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -126,8 +163,12 @@ export default function CheckTicketScreen({
   const { draws, loading } = useDraws(lotteryId, refetchTrigger);
 
   // We do not require user to select a purchase region. Prefer GPS/known jurisdictionCode, else fall back.
-  const effectiveJurisdictionCode = jurisdictionCode ?? 'NATIONAL';
-  const prizeJurisdictionCode = jurisdictionCode ?? 'NATIONAL';
+  const defaultJurisdictionCode =
+    lotteryId === 'powerball' || lotteryId === 'mega_millions' ? 'US-NATIONAL' : 'CA-NATIONAL';
+  const normalizedJurisdictionCode =
+    typeof jurisdictionCode === 'string' && jurisdictionCode.trim().length > 0 ? jurisdictionCode.trim() : null;
+  const effectiveJurisdictionCode = normalizedJurisdictionCode ?? defaultJurisdictionCode;
+  const prizeJurisdictionCode = normalizedJurisdictionCode ?? defaultJurisdictionCode;
 
   const def = LOTTERY_DEFS[lotteryId];
   const rawDrawsList = [...draws, ...extraDraws.filter((e) => !draws.some((d) => d.draw_date === e.draw_date))];
@@ -138,10 +179,24 @@ export default function CheckTicketScreen({
       : rawDrawsList;
   const drawScrollRef = useRef<ScrollView>(null);
   const checkScrollRef = useRef<ScrollView>(null);
-  const scanCoachRef = useRef<View>(null);
   /** Y offset of the numbers section within ScrollView content (for post-OCR scroll). */
   const numbersSectionYRef = useRef(0);
   const CHIP_WIDTH = 105;
+
+  const formatGroupedNumber = useCallback((raw: string, groups: number[], sep = '-') => {
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    let idx = 0;
+    const parts: string[] = [];
+    for (const g of groups) {
+      if (idx >= digits.length) break;
+      const chunk = digits.slice(idx, idx + Math.max(1, g));
+      if (!chunk) break;
+      parts.push(chunk);
+      idx += Math.max(1, g);
+    }
+    if (idx < digits.length) parts.push(digits.slice(idx));
+    return parts.join(sep);
+  }, []);
 
   const scrollToNumbersSection = useCallback(() => {
     InteractionManager.runAfterInteractions(() => {
@@ -154,34 +209,28 @@ export default function CheckTicketScreen({
     });
   }, []);
 
-  const reportScanCoachRect = useCallback(() => {
-    if (checkTourStep !== 2 || !onCheckTourHighlight) return;
-    InteractionManager.runAfterInteractions(() => {
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          scanCoachRef.current?.measureInWindow((x, y, w, h) => {
-            if (w > 0 && h > 0) onCheckTourHighlight({ x, y, width: w, height: h });
-          });
-        }, 120);
-      });
-    });
-  }, [checkTourStep, onCheckTourHighlight]);
-
-  useEffect(() => {
-    reportScanCoachRect();
-  }, [reportScanCoachRect, lotteryId]);
-
   useEffect(() => {
     setLotteryId(preselectedLottery);
   }, [preselectedLottery]);
 
-  useEffect(() => {
-    if (initialRecordId) return;
+  const resetScanState = useCallback(() => {
+    // Clear current image + OCR readings.
+    setImageUri(null);
+    setOcrBestVariant(null);
+    setDevPreViewer(null);
+    setOcrReading(false);
+    setDevPreprocessDebug((prev) => {
+      if (prev?.uris?.length) {
+        deleteDebugVariantUris(prev.uris).catch(() => {});
+      }
+      return null;
+    });
     setSelectedDraw(null);
     setExtraDraws([]);
     setOcrDateDetected(false);
     setDateStatusMsg(null);
     setOcrRawText(null);
+    setOcrAddOnsDebug(null);
     setDateConfirmModal(null);
     setAddOnsSelected({});
     setAddOnsInputs({});
@@ -198,7 +247,18 @@ export default function CheckTicketScreen({
     } else {
       setSpecialByLine([]);
     }
+  }, [lotteryId]);
+
+  useEffect(() => {
+    if (initialRecordId) return;
+    resetScanState();
   }, [lotteryId, initialRecordId]);
+
+  useEffect(() => {
+    if (!resetNonce) return;
+    if (initialRecordId) return;
+    resetScanState();
+  }, [resetNonce, initialRecordId, resetScanState]);
 
   // Keep PB/MM specialByLine aligned with current UI line count.
   useEffect(() => {
@@ -323,7 +383,7 @@ export default function CheckTicketScreen({
         return true;
       }
       lastBackPressAtRef.current = now;
-      ToastAndroid.show('再按一次返回键回到主页', ToastAndroid.SHORT);
+      ToastAndroid.show('Press back again to return home', ToastAndroid.SHORT);
       return true;
     });
     return () => sub.remove();
@@ -505,7 +565,10 @@ export default function CheckTicketScreen({
           const f = full as Record<string, unknown>;
           drawForAddOns = {
             ...drawForAddOns,
-            extra_number: (f.extra_number as string | undefined) ?? drawForAddOns.extra_number,
+            extra_number:
+              resolveDrawExtraNumber(f, effectiveJurisdictionCode) ??
+              (f.extra_number as string | undefined) ??
+              drawForAddOns.extra_number,
             encore_number: (f.encore_number as string | undefined) ?? drawForAddOns.encore_number,
             maxmillions_numbers_json:
               (f.maxmillions_numbers_json as string[] | undefined) ?? drawForAddOns.maxmillions_numbers_json,
@@ -658,9 +721,20 @@ export default function CheckTicketScreen({
     } : undefined);
 
     setOcrRawText(parsed?.rawText ?? null);
+    if (__DEV__) setOcrAddOnsDebug(parsed?.addOnsDetected ? JSON.stringify(parsed.addOnsDetected) : 'null');
     setOcrBestVariant(__DEV__ ? (parsed as any)?.debugOcrVariant ?? null : null);
     if (__DEV__ && parsed?.rawText) {
-      console.log('--- CheckTicket OCR rawText（可全选复制）---\n', parsed.rawText, '\n--- end rawText ---');
+      console.log('--- CheckTicket OCR rawText ---\n', parsed.rawText, '\n--- end rawText ---');
+    }
+    if (__DEV__) {
+      console.log(
+        '[CheckTicket] addOnsDetected=',
+        parsed?.addOnsDetected ?? null,
+        'jurisdiction=',
+        effectiveJurisdictionCode,
+        'lotteryId=',
+        lotteryId
+      );
     }
     if (__DEV__ && parsed?.allSets?.length) {
       console.log('[CheckTicket] parsed allSets=%d specialsPerLine=%d', parsed.allSets.length, parsed.specialsPerLine?.length ?? 0);
@@ -715,9 +789,10 @@ export default function CheckTicketScreen({
         const newInputs: AddOnsInputs = {};
         for (const code of selectable) {
           if (HIDDEN_ADD_ON_CODES.has(code)) continue;
-          if (parsed.addOnsDetected!.selected[code]) {
+          const val = parsed.addOnsDetected!.inputs[code];
+          const isSel = !!parsed.addOnsDetected!.selected[code] || (val != null && String(val).length > 0);
+          if (isSel) {
             newSelected[code as keyof AddOnsSelected] = true;
-            const val = parsed.addOnsDetected!.inputs[code];
             if (val != null) newInputs[code as keyof AddOnsInputs] = val;
           }
         }
@@ -731,6 +806,10 @@ export default function CheckTicketScreen({
           if (det.selected.ENCORE && det.inputs.ENCORE) {
             newSelected.ENCORE = true;
             newInputs.ENCORE = det.inputs.ENCORE;
+          }
+          if (det.selected.TAG && det.inputs.TAG) {
+            newSelected.TAG = true;
+            newInputs.TAG = det.inputs.TAG;
           }
         }
         if (Object.keys(newSelected).length > 0) {
@@ -856,35 +935,63 @@ export default function CheckTicketScreen({
 
   const insets = useSafeAreaInsets();
 
-  return (
-    <ScrollView
-      ref={checkScrollRef}
-      style={styles.container}
-      contentContainerStyle={[
-        styles.content,
-        {
-          paddingTop: insets.top + SPACING.screenPadding,
-          paddingBottom: SPACING.screenPaddingBottom + insets.bottom,
-        },
-      ]}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          tintColor={COLORS.primary}
-        />
-      }
-      onLayout={() => reportScanCoachRect()}
-      onContentSizeChange={() => reportScanCoachRect()}
-      onScrollEndDrag={() => reportScanCoachRect()}
-      onMomentumScrollEnd={() => reportScanCoachRect()}
-    >
-      <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-        <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
-        <Text style={styles.backText}>Back</Text>
-      </TouchableOpacity>
+  const visibleAddOnItems = useMemo(
+    () => addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)),
+    [addOnCatalog]
+  );
 
-      <Text style={styles.title}>Check Ticket</Text>
+  const catalogOtherItems = useMemo(
+    () => visibleAddOnItems.filter((i) => !isIndependentAddOnCode(i.add_on_code)),
+    [visibleAddOnItems]
+  );
+
+  const independentCode = useMemo(() => {
+    if (lotteryId !== 'lotto_max' && lotteryId !== 'lotto_649') return null;
+    // If OCR/user already provided a specific add-on number, prefer showing that one
+    // (so NATIONAL still auto-fills ENCORE/TAG/EXTRA correctly).
+    if (addOnsSelected.ENCORE || addOnsInputs.ENCORE) return 'ENCORE' as const;
+    if (addOnsSelected.TAG || addOnsInputs.TAG) return 'TAG' as const;
+    if (addOnsSelected.EXTRA || addOnsInputs.EXTRA) return 'EXTRA' as const;
+    return inferIndependentAddOnCode(lotteryId, effectiveJurisdictionCode);
+  }, [lotteryId, effectiveJurisdictionCode, addOnsSelected, addOnsInputs]);
+
+  const independentCatalogItem = useMemo(() => {
+    if (!independentCode) return null;
+    return visibleAddOnItems.find((i) => i.add_on_code === independentCode) ?? null;
+  }, [visibleAddOnItems, independentCode]);
+
+  const showIndependentExtraBlock = lotteryId === 'lotto_max' || lotteryId === 'lotto_649';
+  const showOtherAddOnBlocks = catalogOtherItems.length > 0;
+
+  return (
+    <View style={styles.screenWrap}>
+      <View style={[styles.stickyHeader, { paddingTop: insets.top + SPACING.screenPadding }]}>
+        <View style={styles.content}>
+          <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+            <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Check Ticket</Text>
+        </View>
+      </View>
+      <ScrollView
+        ref={checkScrollRef}
+        style={styles.container}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: SPACING.screenPadding,
+            paddingBottom: SPACING.screenPaddingBottom + insets.bottom,
+          },
+        ]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={COLORS.primary}
+          />
+        }
+      >
 
       <View style={styles.lotteryRow}>
         <Text style={styles.label}>Lottery</Text>
@@ -967,7 +1074,6 @@ export default function CheckTicketScreen({
           <View style={styles.readingCard}>
             <ActivityIndicator size="large" color={COLORS.gold} />
             <Text style={styles.readingTitle}>Reading ticket…</Text>
-            <Text style={styles.readingSubtitle}>DYE 1.0 — flatten, OCR, digit cleanup</Text>
           </View>
         </View>
       </Modal>
@@ -999,13 +1105,8 @@ export default function CheckTicketScreen({
         </ScrollView>
       )}
 
-      <Text style={styles.label}>How to enter numbers</Text>
-      <View
-        ref={scanCoachRef}
-        collapsable={false}
-        style={styles.entryRow}
-        onLayout={() => reportScanCoachRect()}
-      >
+      {/* Removed: "How to enter numbers" helper title */}
+      <View style={styles.entryRow}>
         {Platform.OS !== 'web' ? (
           <TouchableOpacity style={styles.entryBtn} onPress={() => scanDocument()}>
             <Ionicons name="scan" size={22} color={COLORS.gold} style={styles.entryBtnIcon} />
@@ -1018,12 +1119,17 @@ export default function CheckTicketScreen({
           </TouchableOpacity>
         )}
       </View>
-      {Platform.OS !== 'web' && (
-        <Text style={styles.scanHint}>Use "Scan ticket" for angled photos — it flattens the image for better date/number recognition.</Text>
-      )}
+      {/* Removed: angled-photo hint (keep feature, hide text) */}
       {(lotteryId === 'powerball' || lotteryId === 'mega_millions') && (
         <Text style={styles.scanHint}>
-          PB/MM 最多自动识别 {MAX_UI_LINES} 行；如果票面超过 {MAX_UI_LINES} 行，请在下方点 “+” 增加行并手动补齐超出的部分。
+          Powerball / Mega Millions: OCR can auto-detect up to {MAX_UI_LINES} lines. If your ticket has more than {MAX_UI_LINES} lines, tap “+”
+          below to add lines and fill in the rest manually.
+          {'\n'}OCR is assistive only. If anything looks wrong, please correct it manually.
+        </Text>
+      )}
+      {(lotteryId === 'lotto_max' || lotteryId === 'lotto_649') && (
+        <Text style={styles.scanHint}>
+          Scan is assistive only. Please review your numbers and adjust manually if needed.
         </Text>
       )}
 
@@ -1060,11 +1166,9 @@ export default function CheckTicketScreen({
                 : 'If numbers weren\'t detected, enter manually below. If draw date is wrong, select the correct date above.'}
             </Text>
           )}
-          {__DEV__ && Platform.OS !== 'web' && devPreprocessDebug && devPreprocessDebug.uris.length > 0 ? (
+          {SHOW_OCR_DEBUG_UI && Platform.OS !== 'web' && devPreprocessDebug && devPreprocessDebug.uris.length > 0 ? (
             <View style={styles.devPreBlock}>
-              <Text style={styles.devPreLabel}>
-                DEV: OCR 预处理变体（调试用，发布前删掉本段 UI）
-              </Text>
+              <Text style={styles.devPreLabel}>DEV: OCR preprocess variants (debug only)</Text>
               <Modal
                 visible={!!devPreViewer}
                 transparent
@@ -1136,16 +1240,17 @@ export default function CheckTicketScreen({
               </ScrollView>
             </View>
           ) : null}
-          {__DEV__ && Platform.OS !== 'web' && ocrRawText ? (
+          {SHOW_OCR_DEBUG_UI && Platform.OS !== 'web' && ocrRawText ? (
             <View style={styles.devOcrRawBlock}>
               <TouchableOpacity
                 onPress={() => setShowOcrLog((v) => !v)}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.devPreLabel}>
-                  DEV: OCR 原文 rawText（点按展开/收起，长按文字可选中复制；Metro 终端也有完整输出）
+                  DEV: OCR rawText (tap to expand/collapse; long-press to select & copy)
                   {ocrBestVariant?.label ? `\nvariant: ${ocrBestVariant.label}` : ''}
                   {ocrBestVariant?.uri ? `\nuri: ${ocrBestVariant.uri}` : ''}
+                  {ocrAddOnsDebug != null ? `\naddOnsDetected: ${ocrAddOnsDebug}` : ''}
                 </Text>
               </TouchableOpacity>
               {showOcrLog ? (
@@ -1174,7 +1279,8 @@ export default function CheckTicketScreen({
       </View>
       {ocrExtraLinesCount > 0 && (
         <Text style={styles.hint}>
-          OCR 识别到 {ocrExtraLinesCount} 行超出上限（已截断到 {MAX_UI_LINES} 行）。你可以点下方 “+” 增加行并手动填入。
+          OCR detected {ocrExtraLinesCount} extra line(s) beyond the limit (truncated to {MAX_UI_LINES}). Tap “+” below to add lines and enter them
+          manually.
         </Text>
       )}
       {Array.from({ length: uiLines }, (_, i) => i).map((lineIdx) => {
@@ -1298,57 +1404,99 @@ export default function CheckTicketScreen({
         </>
       )}
 
-      {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).length > 0 && (
+      {(showIndependentExtraBlock || showOtherAddOnBlocks) && (
         <View style={styles.addOnSection}>
-          <Text style={styles.label}>Add-ons (optional)</Text>
-          {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).map((item) => {
-            if (item.add_on_code === 'EXTRA' || item.add_on_code === 'ENCORE' || item.add_on_code === 'TAG') {
-              const digits = item.input_schema_json?.digits ?? 7;
-              return (
-                <View key={item.add_on_code} style={styles.addOnBlock}>
-                  <TouchableOpacity
-                    style={[styles.addOnRow, addOnsSelected[item.add_on_code] && styles.addOnRowActive]}
-                    onPress={() => setAddOnsSelected((s) => ({ ...s, [item.add_on_code]: !s[item.add_on_code] }))}
-                  >
-                    <Ionicons name={addOnsSelected[item.add_on_code] ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
-                    <Text style={styles.addOnLabel}>{item.add_on_code}</Text>
-                  </TouchableOpacity>
-                  {addOnsSelected[item.add_on_code] && (
-                    <TextInput
-                      style={styles.addOnInput}
-                      value={addOnsInputs[item.add_on_code] ?? ''}
-                      onChangeText={(t) => setAddOnsInputs((s) => ({ ...s, [item.add_on_code]: t.replace(/\D/g, '').slice(0, digits) }))}
-                      placeholder={`${digits} digits`}
-                      placeholderTextColor={COLORS.textMuted}
-                      keyboardType="number-pad"
-                      maxLength={digits}
-                    />
-                  )}
-                </View>
-              );
-            }
-            if (item.add_on_code === 'MAXMILLIONS') {
-              return (
-                <View key={item.add_on_code} style={styles.addOnBlock}>
-                  <Text style={styles.addOnLabel}>Maxmillions (7 digits each, comma separated)</Text>
-                  <TextInput
-                    style={styles.addOnInput}
-                    value={(addOnsInputs.MAXMILLIONS ?? []).join(', ')}
-                    onChangeText={(t) =>
-                      setAddOnsInputs((s) => ({
-                        ...s,
-                        MAXMILLIONS: t.split(/[\s,]+/).map((x) => x.replace(/\D/g, '').slice(0, 7)).filter(Boolean),
-                      }))
-                    }
-                    placeholder="e.g. 1234567, 7654321"
-                    placeholderTextColor={COLORS.textMuted}
-                    keyboardType="number-pad"
-                  />
-                </View>
-              );
-            }
-            return null;
-          })}
+          {showIndependentExtraBlock ? (
+            <>
+              <Text style={styles.label}>Extra (optional)</Text>
+              {(() => {
+                const code: IndependentAddOnCode = independentCode ?? 'EXTRA';
+                const schFromCatalog = independentCatalogItem?.input_schema_json ?? null;
+                const sch = {
+                  ...schemaForOrphanIndependentAddOn(code, effectiveJurisdictionCode),
+                  ...(schFromCatalog ?? {}),
+                };
+                const rawValDigits = String(addOnsInputs[code] ?? '').replace(/\D/g, '');
+                const sep = typeof sch.groupSeparator === 'string' ? sch.groupSeparator : '-';
+                const baseDigits = typeof sch.digits === 'number' ? sch.digits : 7;
+                // If OCR already detected an 8-digit EXTRA (BC-style four pairs), honor it even when jurisdiction is NATIONAL.
+                const digits =
+                  code === 'EXTRA' && rawValDigits.length >= 8 ? 8 : baseDigits;
+                const inferredGroups =
+                  code === 'EXTRA' && digits === 8 ? ([2, 2, 2, 2] as number[]) : undefined;
+                const groups = Array.isArray(sch.displayGroups) ? sch.displayGroups : inferredGroups;
+                const rawMaxDigits = groups?.length
+                  ? groups.reduce((a, b) => a + Math.max(1, Number(b) || 0), 0)
+                  : digits;
+                const displayMaxLen = groups?.length ? rawMaxDigits + groups.length - 1 : rawMaxDigits;
+                const rawVal = String(addOnsInputs[code] ?? '');
+                const checked = !!addOnsSelected[code] || rawVal.replace(/\D/g, '').length > 0;
+                const showGroupedExtra = code === 'EXTRA' && !!groups?.length;
+                const displayVal = showGroupedExtra ? formatGroupedNumber(rawVal, groups!, sep) : rawVal;
+                return (
+                  <View key={`independent-${code}`} style={styles.addOnBlock}>
+                    <TouchableOpacity
+                      style={[styles.addOnRow, checked && styles.addOnRowActive]}
+                      onPress={() => setAddOnsSelected((s) => ({ ...s, [code]: !s[code] }))}
+                    >
+                      <Ionicons name={checked ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
+                      <Text style={styles.addOnLabel}>{EXTRA_ADDON_UI_LABEL}</Text>
+                    </TouchableOpacity>
+                    {checked && (
+                      <TextInput
+                        style={styles.addOnInput}
+                        value={displayVal}
+                        onChangeText={(t) =>
+                          setAddOnsInputs((s) => ({
+                            ...s,
+                            [code]: t.replace(/\D/g, '').slice(0, rawMaxDigits),
+                          }))
+                        }
+                        placeholder={
+                          showGroupedExtra
+                            ? groups!.map((g) => 'x'.repeat(Math.max(1, Number(g) || 1))).join(sep)
+                            : `${rawMaxDigits} digits`
+                        }
+                        placeholderTextColor={COLORS.textMuted}
+                        keyboardType="number-pad"
+                        maxLength={displayMaxLen}
+                      />
+                    )}
+                  </View>
+                );
+              })()}
+            </>
+          ) : null}
+          {showOtherAddOnBlocks ? (
+            <>
+              <Text style={styles.label}>
+                {showIndependentExtraBlock ? 'Other add-ons' : 'Add-ons (optional)'}
+              </Text>
+              {catalogOtherItems.map((item) => {
+                if (item.add_on_code === 'MAXMILLIONS') {
+                  return (
+                    <View key={item.add_on_code} style={styles.addOnBlock}>
+                      <Text style={styles.addOnLabel}>Maxmillions (7 digits each, comma separated)</Text>
+                      <TextInput
+                        style={styles.addOnInput}
+                        value={(addOnsInputs.MAXMILLIONS ?? []).join(', ')}
+                        onChangeText={(t) =>
+                          setAddOnsInputs((s) => ({
+                            ...s,
+                            MAXMILLIONS: t.split(/[\s,]+/).map((x) => x.replace(/\D/g, '').slice(0, 7)).filter(Boolean),
+                          }))
+                        }
+                        placeholder="e.g. 1234567, 7654321"
+                        placeholderTextColor={COLORS.textMuted}
+                        keyboardType="number-pad"
+                      />
+                    </View>
+                  );
+                }
+                return null;
+              })}
+            </>
+          ) : null}
         </View>
       )}
 
@@ -1402,13 +1550,21 @@ export default function CheckTicketScreen({
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrap: { flex: 1, backgroundColor: COLORS.bg },
   container: { flex: 1, backgroundColor: COLORS.bg },
   content: { paddingHorizontal: SPACING.screenPadding },
+  stickyHeader: {
+    backgroundColor: COLORS.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgElevated,
+    paddingBottom: 6,
+  },
   backBtn: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   backText: { color: COLORS.textSecondary, fontSize: 16, marginLeft: 6 },
   title: { fontSize: 24, fontWeight: '700', color: COLORS.text, marginBottom: 24 },

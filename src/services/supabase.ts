@@ -563,7 +563,7 @@ export function onAuthStateChange(callback: (email: string | null) => void): () 
 const DRAWS_SELECT_MIN = 'id, lottery_id, draw_date, winning_numbers, special_numbers, jackpot_cents';
 /** Full columns for add-ons (EXTRA, ENCORE, TAG, Power Play, etc.) */
 const DRAWS_SELECT_FULL =
-  'id, lottery_id, draw_date, winning_numbers, special_numbers, bonus_numbers, jackpot_cents, extra_number, encore_number, tag_number, power_play_multiplier, double_play_numbers_json, maxmillions_numbers_json, mega_multiplier';
+  'id, lottery_id, draw_date, winning_numbers, special_numbers, bonus_numbers, jackpot_cents, extra_number, extra_numbers_by_jurisdiction, encore_number, tag_number, power_play_multiplier, double_play_numbers_json, maxmillions_numbers_json, mega_multiplier';
 
 function normalizeDraw(raw: Record<string, unknown>): Draw & Record<string, unknown> {
   const wn = raw.winning_numbers;
@@ -721,6 +721,26 @@ export async function fetchCompassSnapshot(gameCode: string): Promise<{
   } catch {
     return null;
   }
+}
+
+/**
+ * Official EXTRA for check: per-province string from `extra_numbers_by_jurisdiction` when present,
+ * otherwise `extra_number` (WCLC / national scrape default).
+ */
+export function resolveDrawExtraNumber(
+  draw: Record<string, unknown> | null | undefined,
+  jurisdictionCode: string | undefined,
+): string | undefined {
+  if (!draw) return undefined;
+  const jc =
+    jurisdictionCode && jurisdictionCode !== '' && jurisdictionCode !== 'NATIONAL' ? jurisdictionCode : '';
+  const map = draw.extra_numbers_by_jurisdiction as Record<string, string> | undefined | null;
+  if (jc && map && typeof map === 'object') {
+    const v = map[jc];
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+  }
+  const ex = draw.extra_number;
+  return typeof ex === 'string' && ex.trim().length > 0 ? ex.trim() : undefined;
 }
 
 /** Fetch single draw by date. Uses direct REST to avoid client blocking. */

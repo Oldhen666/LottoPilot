@@ -27,6 +27,12 @@ describe('computeExtraResult', () => {
   it('no match returns null when winning missing', () => {
     expect(computeExtraResult('1234567', null)).toBeNull();
   });
+
+  it('grouped BC-style EXTRA string matches 7-digit official when aligned', () => {
+    const r = computeExtraResult('47-73-74-97', '4773749');
+    expect(r).not.toBeNull();
+    expect(r!.matchedDigits).toBe(7);
+  });
 });
 
 describe('computeEncoreResult', () => {

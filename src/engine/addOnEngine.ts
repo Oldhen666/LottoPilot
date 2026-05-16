@@ -52,13 +52,29 @@ export function computeExtraResult(
   winningNumber: string | null | undefined
 ): { user: string; winning: string; matchedDigits: number; prizeText: string } | null {
   if (!winningNumber || !userNumber) return null;
-  const u = userNumber.replace(/\D/g, '').slice(-7);
-  const w = winningNumber.replace(/\D/g, '').slice(-7);
-  if (u.length < 7 || w.length < 7) return null;
-  const matched = matchDigitsRightToLeft(u, w);
+  const uAll = userNumber.replace(/\D/g, '');
+  const wAll = winningNumber.replace(/\D/g, '');
+  if (uAll.length < 7 || wAll.length < 7) return null;
+
+  /** Align lengths when ticket prints 8 digits (e.g. BC four pairs) vs official 7-digit EXTRA. */
+  let uCmp = uAll;
+  let wCmp = wAll;
+  if (uCmp.length !== wCmp.length) {
+    if (uCmp.length > wCmp.length) {
+      const left = uCmp.slice(0, wCmp.length);
+      const right = uCmp.slice(-wCmp.length);
+      const ml = matchDigitsRightToLeft(left, wCmp);
+      const mr = matchDigitsRightToLeft(right, wCmp);
+      uCmp = mr >= ml ? right : left;
+    } else {
+      uCmp = uCmp.padStart(wCmp.length, '0').slice(-wCmp.length);
+    }
+  }
+
+  const matched = matchDigitsRightToLeft(uCmp, wCmp);
   return {
-    user: u,
-    winning: w,
+    user: userNumber.replace(/\s+/g, ' ').trim(),
+    winning: winningNumber.replace(/\s+/g, ' ').trim(),
     matchedDigits: matched,
     prizeText: tierFromMatchedDigits(matched, 'rightToLeft'),
   };

@@ -13,7 +13,8 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     special_min: 1,
     special_max: 50,
     source_url: 'https://www.olg.ca/en/lottery/play-lotto-max-encore.html',
-    plays_per_ticket: 3,
+    /** BC and others may print more than 3 plays when add-ons / bundles apply (e.g. 4 lines). */
+    plays_per_ticket: 6,
   },
   lotto_649: {
     id: 'lotto_649',

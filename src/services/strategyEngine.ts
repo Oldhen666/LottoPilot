@@ -15,6 +15,16 @@ const LUCKY_BIAS_MULTIPLIER: Record<Exclude<LuckyBiasStrength, 'off'>, number> =
   high: 0.05,    // 5% max
 };
 
+/** Main numbers in [mainMin, mainMax] whose ones digit equals `onesDigit` (0–9). */
+function mainNumbersWithOnesDigit(mainMin: number, mainMax: number, onesDigit: number): number[] {
+  const t = ((onesDigit % 10) + 10) % 10;
+  const out: number[] = [];
+  for (let n = mainMin; n <= mainMax; n++) {
+    if (((n % 10) + 10) % 10 === t) out.push(n);
+  }
+  return out;
+}
+
 interface PickParams {
   risk: { consecutivePenalty: number; birthdayPenalty: number; symmetryPenalty: number };
   structure: { oddEvenRatio: number; lowHighRatio: number; sumRangeWeight: number; gapWeight: number; clustering: number };
@@ -102,8 +112,8 @@ function pickWithAllBiases(
   return candidates[candidates.length - 1];
 }
 
-/** Map feature weights to generation params. */
-function featureWeightsToParams(weights: Record<FeatureId, number>) {
+/** Map feature weights to generation params (shared with Strategy Score readout). */
+export function featureWeightsToParams(weights: Record<FeatureId, number>) {
   const oddEven = weights.odd_even ?? 0.5;
   const lowHigh = weights.low_high ?? 0.5;
   const sumRange = weights.sum_range ?? 0.5;
@@ -189,7 +199,11 @@ export function generateFromStrategySet(
     while (main.length < def.main_count) {
       const candidates = pool.filter((n) => !chosen.has(n));
       if (candidates.length === 0) break;
-      const lucky = (set.luckyNumbers ?? []).filter((x) => x >= def.main_min && x <= def.main_max);
+      const digit = set.luckyOnesDigit;
+      const lucky =
+        digit === undefined || digit < 0 || digit > 9
+          ? []
+          : mainNumbersWithOnesDigit(def.main_min, def.main_max, digit);
       const strength = set.luckyBiasStrength ?? 'off';
       const boost = strength === 'off' || lucky.length === 0 ? 0 : LUCKY_BIAS_MULTIPLIER[strength];
       const n = pickWithAllBiases(

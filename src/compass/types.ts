@@ -21,6 +21,12 @@ export interface PositionTopK {
   topNumber: number;
 }
 
+/** Full occurrence counts per sorted ascending slot (position 1..picksPerDraw); counts[n-1] = frequency of ball n (1..maxRange). */
+export interface PositionFrequencyRow {
+  position: number;
+  counts: number[];
+}
+
 export interface ShapeStats {
   oddEven: { odd: { min: number; max: number }; even: { min: number; max: number } };
   lowHigh: { low: { min: number; max: number }; high: { min: number; max: number } };
@@ -32,6 +38,10 @@ export interface CompassPayload {
   gameCode: string;
   trendScores: NumberTrendScore[];
   positionTopK: PositionTopK[];
+  /** Present when computed locally; older snapshots may omit — UI falls back to Top-K only. */
+  positionFrequencies?: PositionFrequencyRow[];
+  /** Special ball frequency (Powerball / Mega Ball / bonus ball). Optional for backward compatibility. */
+  specialFrequency?: { min: number; max: number; counts: number[] };
   shapeStats: ShapeStats;
   meta: {
     longDraws: number;

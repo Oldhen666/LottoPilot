@@ -17,7 +17,9 @@ export interface GetCompassResult {
 }
 
 /** Get draws: local cache first (fast), then optionally sync from Supabase in background. */
-export async function getDrawsForCompass(lotteryId: string): Promise<{ draw_date: string; winning_numbers: number[] }[]> {
+export async function getDrawsForCompass(
+  lotteryId: string
+): Promise<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] }[]> {
   const local = await getDrawsFromCache(lotteryId, DRAWS_LIMIT);
   if (local.length >= 100) {
     void syncDrawsFromSupabase(lotteryId);
@@ -88,14 +90,15 @@ export async function getCompassPayload(
   }
 
   const draws = await getDrawsForCompass(gameCode);
-  const records = draws.map((d) => ({ draw_date: d.draw_date, winning_numbers: d.winning_numbers }));
+  const records = draws.map((d) => ({ draw_date: d.draw_date, winning_numbers: d.winning_numbers, special_numbers: d.special_numbers }));
 
   const payload = computeCompass(
     records,
     gameCode,
     def.main_count,
     def.main_max,
-    config
+    config,
+    def.special_count && def.special_max ? { min: def.special_min ?? 1, max: def.special_max } : undefined
   );
 
   if (payload) {

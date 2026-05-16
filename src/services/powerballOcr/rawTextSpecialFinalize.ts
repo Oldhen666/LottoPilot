@@ -804,6 +804,7 @@ export function finalizeUsGameSpecialsFromRawText(
     ticket.specialsPerLine = ticket.specialsPerLine.map((cur, i) => {
       if (i >= mbList.length) return cur;
       const v = mbList[i]!;
+      if (cur != null && cur > 0) return cur;
       return v > 0 ? v : cur;
     });
     const firstNonZero = ticket.specialsPerLine.find((n) => n != null && n > 0);
