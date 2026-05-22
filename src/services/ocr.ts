@@ -811,6 +811,18 @@ export async function parseTicketFromImage(
     return finalizeUsSpecials(parseMlKitResultToTicket(result, parseOpts));
   };
 
+  // Canadian tickets: try direct ML Kit on the scan URI before heavy preprocess (release Android paths).
+  if (lotteryId === 'lotto_max' || lotteryId === 'lotto_649') {
+    try {
+      const direct = await runOne(imageUri);
+      if (direct?.allSets?.length || direct?.mainNumbers?.length) {
+        return direct;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
   if (lotteryId === 'powerball' && USE_LAYERED_POWERBALL_OCR) {
     try {
       const { runPowerballLayeredPipeline } = await import('./powerballOcr/pipeline');

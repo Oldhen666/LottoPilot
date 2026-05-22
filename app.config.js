@@ -33,7 +33,7 @@ module.exports = {
     name: 'LottoPilot',
     slug: 'LottoPilot',
     scheme: 'lottopilot',
-    version: '1.0.7',
+    version: '1.0.8',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -50,7 +50,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 37,
+      versionCode: 38,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -62,6 +62,7 @@ module.exports = {
     updates: {
       url: 'https://u.expo.dev/2ae23643-f627-4cfc-9214-764502ce4849',
     },
+    /** Keep 1.0.7 until Play build 38 ships; OTA fixes target installed v37 (runtime 1.0.7). */
     runtimeVersion: '1.0.7',
     plugins: [
       [

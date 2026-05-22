@@ -6,6 +6,65 @@ import type { MlKitResult } from './types';
 /** Native ML Kit rejects InputImage when width or height is under 32 (expo-mlkit-ocr error message). */
 const ML_KIT_MIN_DIM = 32;
 
+/** Re-encode scanner / content URIs into app cache so FileSystem + ML Kit can read on release Android builds. */
+async function prepareUriForMlKit(uri: string): Promise<{ uri: string; dispose: () => Promise<void> }> {
+  if (Platform.OS === 'web') {
+    return { uri, dispose: async () => {} };
+  }
+  const trimmed = uri.trim();
+  if (!trimmed) {
+    return { uri: trimmed, dispose: async () => {} };
+  }
+  const candidates: string[] = [];
+  const push = (u: string) => {
+    if (u && !candidates.includes(u)) candidates.push(u);
+  };
+  push(trimmed);
+  if (!trimmed.startsWith('file://') && !trimmed.startsWith('content://')) {
+    push(`file://${trimmed}`);
+  }
+  if (trimmed.startsWith('file://')) {
+    push(trimmed.slice('file://'.length));
+  }
+
+  const tempToDelete: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const r = await ImageManipulator.manipulateAsync(candidate, [], {
+        compress: 0.92,
+        format: ImageManipulator.SaveFormat.JPEG,
+      });
+      if (r.uri && r.uri !== trimmed) tempToDelete.push(r.uri);
+      if (r.width >= ML_KIT_MIN_DIM && r.height >= ML_KIT_MIN_DIM) {
+        return {
+          uri: r.uri,
+          dispose: async () => {
+            for (const u of tempToDelete) await deleteUriIfLocal(u);
+          },
+        };
+      }
+      const scale = Math.max(ML_KIT_MIN_DIM / Math.max(1, r.width), ML_KIT_MIN_DIM / Math.max(1, r.height));
+      const nw = Math.max(ML_KIT_MIN_DIM, Math.ceil(r.width * scale));
+      const nh = Math.max(ML_KIT_MIN_DIM, Math.ceil(r.height * scale));
+      const r2 = await ImageManipulator.manipulateAsync(
+        r.uri,
+        [{ resize: { width: nw, height: nh } }],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      if (r2.uri !== r.uri) tempToDelete.push(r2.uri);
+      return {
+        uri: r2.uri,
+        dispose: async () => {
+          for (const u of tempToDelete) await deleteUriIfLocal(u);
+        },
+      };
+    } catch {
+      /* try next candidate form */
+    }
+  }
+  return { uri: trimmed, dispose: async () => {} };
+}
+
 /**
  * Reliable pixel size: `Image.getSize` often fails on some `file://` / cache URIs on Android;
  * re-encoding with no transforms still returns width/height from the native pipeline.
@@ -101,15 +160,22 @@ async function ensureMlKitMinDimensions(uri: string): Promise<{ uri: string; dis
 
 export async function recognizeTicketText(uri: string): Promise<MlKitResult> {
   const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-  const { uri: sizedUri, dispose } = await ensureMlKitMinDimensions(uri);
+  const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
+  const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(preparedUri);
   try {
-    const result = await ExpoMlkitOcr.recognizeText(sizedUri);
+    let result = await ExpoMlkitOcr.recognizeText(sizedUri);
+    let text = (result?.text ?? '').trim();
+    if (!text && sizedUri !== preparedUri) {
+      result = await ExpoMlkitOcr.recognizeText(preparedUri);
+      text = (result?.text ?? '').trim();
+    }
     return {
       text: result?.text ?? '',
       blocks: result?.blocks,
     } as MlKitResult;
   } finally {
-    await dispose();
+    await disposeSized();
+    await disposePrepared();
   }
 }
 
@@ -141,7 +207,8 @@ export type MlKitRecognizeDetailed = MlKitResult & {
 
 export async function recognizeTicketTextDetailed(uri: string): Promise<MlKitRecognizeDetailed> {
   const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-  const { uri: sizedUri, dispose } = await ensureMlKitMinDimensions(uri);
+  const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
+  const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(preparedUri);
   try {
     const result = await ExpoMlkitOcr.recognizeText(sizedUri);
     const rawNative = result as unknown;
@@ -152,6 +219,7 @@ export async function recognizeTicketTextDetailed(uri: string): Promise<MlKitRec
       rawNative,
     };
   } finally {
-    await dispose();
+    await disposeSized();
+    await disposePrepared();
   }
 }

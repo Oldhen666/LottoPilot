@@ -31,7 +31,7 @@ import { insertRecord, getRecordById } from '../db/sqlite';
 import { computePrize } from '../engine/prizeEngine';
 import { computeAddOnResults } from '../engine/addOnEngine';
 import { fetchAddOnCatalog, isUserSelectableAddOn } from '../services/addOnCatalog';
-import { parseTicketFromImage } from '../services/ocr';
+import { getRawOcrText, parseTicketFromImage } from '../services/ocr';
 import { deleteDebugVariantUris } from '../services/ticketPreprocess/debugCopy';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
@@ -679,8 +679,8 @@ export default function CheckTicketScreen({
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
+      allowsEditing: false,
+      quality: 0.92,
     });
     if (result.canceled || !result.assets?.[0]) return;
     await processImageUri(result.assets[0].uri);
@@ -882,7 +882,24 @@ export default function CheckTicketScreen({
         }
       }
       setOcrDateDetected(false);
-      setDateStatusMsg(parsed ? 'No date detected from ticket. Please select draw date manually.' : 'OCR could not read text. Please enter numbers and select date manually.');
+      let failMsg = parsed
+        ? 'No date detected from ticket. Please select draw date manually.'
+        : 'OCR could not read text. Use Scan ticket with good lighting, or enter numbers manually.';
+      if (!parsed?.mainNumbers?.length && !parsed?.allSets?.length) {
+        try {
+          const raw = await getRawOcrText(uri);
+          const n = raw?.fullText?.trim().length ?? 0;
+          if (n > 12) {
+            failMsg =
+              lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
+                ? 'OCR read text but could not find play lines. Please enter numbers manually.'
+                : 'OCR read text but could not find play numbers. Please enter numbers manually.';
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      setDateStatusMsg(failMsg);
     }
 
       if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
