@@ -1,10 +1,13 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Image, Platform } from 'react-native';
+import type { LotteryId } from '../../types/lottery';
 import { deleteUriIfLocal, readJpegUriToRgba } from '../ticketPreprocess/codec';
 import type { MlKitResult } from './types';
 
 /** Native ML Kit rejects InputImage when width or height is under 32 (expo-mlkit-ocr error message). */
 const ML_KIT_MIN_DIM = 32;
+/** Full-slip photos: upscale width so play lines are readable by ML Kit. */
+const OCR_TARGET_WIDTH = 1280;
 
 /** Re-encode scanner / content URIs into app cache so FileSystem + ML Kit can read on release Android builds. */
 async function prepareUriForMlKit(uri: string): Promise<{ uri: string; dispose: () => Promise<void> }> {
@@ -63,6 +66,83 @@ async function prepareUriForMlKit(uri: string): Promise<{ uri: string; dispose: 
     }
   }
   return { uri: trimmed, dispose: async () => {} };
+}
+
+/** Tall Lotto Max slips: crop to the number block, then upscale width for ML Kit. */
+async function ensureOcrFriendlyResolution(uri: string): Promise<{ uri: string; dispose: () => Promise<void> }> {
+  if (Platform.OS === 'web') {
+    return { uri, dispose: async () => {} };
+  }
+  const dim = await getImagePixelDimensions(uri);
+  if (!dim) {
+    return { uri, dispose: async () => {} };
+  }
+  const { w, h } = dim;
+  const actions: ImageManipulator.Action[] = [];
+  if (h / w > 3) {
+    const cropY = Math.floor(h * 0.05);
+    const cropH = Math.min(h - cropY - 1, Math.max(Math.floor(w * 2.5), Math.floor(h * 0.62)));
+    actions.push({
+      crop: { originX: 0, originY: cropY, width: w, height: cropH },
+    });
+  }
+  if (w < OCR_TARGET_WIDTH) {
+    actions.push({ resize: { width: OCR_TARGET_WIDTH } });
+  }
+  if (!actions.length) {
+    return { uri, dispose: async () => {} };
+  }
+  try {
+    const r = await ImageManipulator.manipulateAsync(uri, actions, {
+      compress: 0.94,
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+    return {
+      uri: r.uri,
+      dispose: async () => {
+        if (r.uri !== uri) await deleteUriIfLocal(r.uri);
+      },
+    };
+  } catch {
+    return { uri, dispose: async () => {} };
+  }
+}
+
+function mlKitUriCandidates(uri: string): string[] {
+  const out: string[] = [];
+  const push = (u: string) => {
+    const t = u.trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+  push(uri);
+  if (uri.startsWith('file://')) {
+    push(uri.slice('file://'.length));
+  } else if (!uri.includes('://')) {
+    push(`file://${uri}`);
+  }
+  return out;
+}
+
+function pickRicherMlKitResult(a: MlKitResult, b: MlKitResult): MlKitResult {
+  const la = (a.text ?? '').trim().length;
+  const lb = (b.text ?? '').trim().length;
+  return lb > la ? b : a;
+}
+
+async function invokeMlKitOnUri(ExpoMlkitOcr: { recognizeText: (u: string) => Promise<unknown> }, uri: string): Promise<MlKitResult> {
+  let best: MlKitResult = { text: '' };
+  for (const candidate of mlKitUriCandidates(uri)) {
+    try {
+      const raw = await ExpoMlkitOcr.recognizeText(candidate);
+      const result = raw as { text?: string; blocks?: MlKitResult['blocks'] };
+      const next: MlKitResult = { text: result?.text ?? '', blocks: result?.blocks };
+      best = pickRicherMlKitResult(best, next);
+      if ((best.text ?? '').trim().length > 48) break;
+    } catch {
+      /* next candidate */
+    }
+  }
+  return best;
 }
 
 /**
@@ -158,23 +238,45 @@ async function ensureMlKitMinDimensions(uri: string): Promise<{ uri: string; dis
   }
 }
 
-export async function recognizeTicketText(uri: string): Promise<MlKitResult> {
+export type RecognizeTicketTextOptions = { lotteryId?: LotteryId };
+
+export async function recognizeTicketText(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
   const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
   const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
-  const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(preparedUri);
+  const { uri: friendlyUri, dispose: disposeFriendly } = await ensureOcrFriendlyResolution(preparedUri);
+  const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(friendlyUri);
+  let best: MlKitResult = { text: '' };
   try {
-    let result = await ExpoMlkitOcr.recognizeText(sizedUri);
-    let text = (result?.text ?? '').trim();
-    if (!text && sizedUri !== preparedUri) {
-      result = await ExpoMlkitOcr.recognizeText(preparedUri);
-      text = (result?.text ?? '').trim();
+    best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, sizedUri));
+    if ((best.text ?? '').trim().length < 24) {
+      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, friendlyUri));
     }
-    return {
-      text: result?.text ?? '',
-      blocks: result?.blocks,
-    } as MlKitResult;
+    if ((best.text ?? '').trim().length < 24) {
+      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, preparedUri));
+    }
+    const lot = opts?.lotteryId;
+    if ((best.text ?? '').trim().length < 24 && lot) {
+      try {
+        const { preprocessTicketImageForOcr } = await import('../ticketPreprocess/preprocessTicketImage');
+        const pre = await preprocessTicketImageForOcr(uri, lot, {
+          fromDocumentScan: true,
+        });
+        try {
+          for (const variant of pre.variantUris) {
+            best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, variant));
+            if ((best.text ?? '').trim().length > 48) break;
+          }
+        } finally {
+          await pre.cleanup();
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return best;
   } finally {
     await disposeSized();
+    await disposeFriendly();
     await disposePrepared();
   }
 }

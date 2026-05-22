@@ -657,6 +657,8 @@ export default function CheckTicketScreen({
       const DocumentScanner = require('react-native-document-scanner-plugin').default;
       const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
         maxNumDocuments: 1,
+        croppedImageQuality: 100,
+        responseType: 'imageFilePath',
       });
       if (scanStatus === 'cancel' || !scannedImages?.length) return;
       const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
@@ -887,7 +889,7 @@ export default function CheckTicketScreen({
         : 'OCR could not read text. Use Scan ticket with good lighting, or enter numbers manually.';
       if (!parsed?.mainNumbers?.length && !parsed?.allSets?.length) {
         try {
-          const raw = await getRawOcrText(uri);
+          const raw = await getRawOcrText(uri, lotteryId);
           const n = raw?.fullText?.trim().length ?? 0;
           if (n > 12) {
             failMsg =

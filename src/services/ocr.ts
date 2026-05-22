@@ -51,10 +51,13 @@ export interface ParsedTicket {
  * Get raw OCR text from image (offline, device-side).
  * Returns null on web or if OCR fails.
  */
-export async function getRawOcrText(imageUri: string): Promise<{ fullText: string } | null> {
+export async function getRawOcrText(
+  imageUri: string,
+  lotteryId?: LotteryId,
+): Promise<{ fullText: string } | null> {
   if (Platform.OS === 'web') return null;
   try {
-    const result = await recognizeTicketText(imageUri);
+    const result = await recognizeTicketText(imageUri, { lotteryId });
     const text = result?.text ?? '';
     return text.trim() ? { fullText: text } : null;
   } catch {
@@ -807,7 +810,7 @@ export async function parseTicketFromImage(
     ) as ParsedTicket | null);
 
   const runOne = async (uri: string) => {
-    const result = (await recognizeTicketText(uri)) as MlKitResult;
+    const result = (await recognizeTicketText(uri, { lotteryId })) as MlKitResult;
     return finalizeUsSpecials(parseMlKitResultToTicket(result, parseOpts));
   };
 
@@ -842,7 +845,7 @@ export async function parseTicketFromImage(
       fromDocumentScan: options?.imageSource === 'document_scan',
     });
     try {
-      const results = await Promise.all(pre.variantUris.map((u) => recognizeTicketText(u)));
+      const results = await Promise.all(pre.variantUris.map((u) => recognizeTicketText(u, { lotteryId })));
       let best: ParsedTicket | null = null;
       let bestScore = -1;
       let bestVariant: { label: string; uri: string; score: number } | null = null;
@@ -860,7 +863,7 @@ export async function parseTicketFromImage(
         }
       }
       // Also evaluate the original image OCR; sometimes preprocessing harms OCR for a specific ticket.
-      const origResult = await recognizeTicketText(imageUri);
+      const origResult = await recognizeTicketText(imageUri, { lotteryId });
       const origParsed = parseMlKitResultToTicket(origResult as MlKitResult, parseOpts);
       const origScore = scoreParsedTicket(origParsed, mainCount, mainMax, {
         lotteryId,
