@@ -57,7 +57,7 @@ export async function getRawOcrText(
 ): Promise<{ fullText: string } | null> {
   if (Platform.OS === 'web') return null;
   try {
-    const result = await recognizeTicketText(imageUri, { lotteryId });
+    const result = await recognizeTicketText(imageUri, { lotteryId, lite: true });
     const text = result?.text ?? '';
     return text.trim() ? { fullText: text } : null;
   } catch {
@@ -845,7 +845,9 @@ export async function parseTicketFromImage(
       fromDocumentScan: options?.imageSource === 'document_scan',
     });
     try {
-      const results = await Promise.all(pre.variantUris.map((u) => recognizeTicketText(u, { lotteryId })));
+      const results = await Promise.all(
+        pre.variantUris.map((u) => recognizeTicketText(u, { lotteryId, lite: true })),
+      );
       let best: ParsedTicket | null = null;
       let bestScore = -1;
       let bestVariant: { label: string; uri: string; score: number } | null = null;
@@ -863,7 +865,7 @@ export async function parseTicketFromImage(
         }
       }
       // Also evaluate the original image OCR; sometimes preprocessing harms OCR for a specific ticket.
-      const origResult = await recognizeTicketText(imageUri, { lotteryId });
+      const origResult = await recognizeTicketText(imageUri, { lotteryId, lite: true });
       const origParsed = parseMlKitResultToTicket(origResult as MlKitResult, parseOpts);
       const origScore = scoreParsedTicket(origParsed, mainCount, mainMax, {
         lotteryId,

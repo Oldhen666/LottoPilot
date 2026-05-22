@@ -8,6 +8,24 @@ import type { MlKitResult } from './types';
 const ML_KIT_MIN_DIM = 32;
 /** Full-slip photos: upscale width so play lines are readable by ML Kit. */
 const OCR_TARGET_WIDTH = 1280;
+const ML_KIT_CALL_TIMEOUT_MS = 18_000;
+const RECOGNIZE_TOTAL_TIMEOUT_MS = 42_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 
 /** Re-encode scanner / content URIs into app cache so FileSystem + ML Kit can read on release Android builds. */
 async function prepareUriForMlKit(uri: string): Promise<{ uri: string; dispose: () => Promise<void> }> {
@@ -129,11 +147,20 @@ function pickRicherMlKitResult(a: MlKitResult, b: MlKitResult): MlKitResult {
   return lb > la ? b : a;
 }
 
-async function invokeMlKitOnUri(ExpoMlkitOcr: { recognizeText: (u: string) => Promise<unknown> }, uri: string): Promise<MlKitResult> {
+async function invokeMlKitOnUri(
+  ExpoMlkitOcr: { recognizeText: (u: string) => Promise<unknown> },
+  uri: string,
+  lite: boolean,
+): Promise<MlKitResult> {
   let best: MlKitResult = { text: '' };
-  for (const candidate of mlKitUriCandidates(uri)) {
+  const candidates = lite ? mlKitUriCandidates(uri).slice(0, 1) : mlKitUriCandidates(uri);
+  for (const candidate of candidates) {
     try {
-      const raw = await ExpoMlkitOcr.recognizeText(candidate);
+      const raw = await withTimeout(
+        ExpoMlkitOcr.recognizeText(candidate),
+        ML_KIT_CALL_TIMEOUT_MS,
+        'ML Kit recognizeText',
+      );
       const result = raw as { text?: string; blocks?: MlKitResult['blocks'] };
       const next: MlKitResult = { text: result?.text ?? '', blocks: result?.blocks };
       best = pickRicherMlKitResult(best, next);
@@ -238,46 +265,39 @@ async function ensureMlKitMinDimensions(uri: string): Promise<{ uri: string; dis
   }
 }
 
-export type RecognizeTicketTextOptions = { lotteryId?: LotteryId };
+export type RecognizeTicketTextOptions = { lotteryId?: LotteryId; /** Skip retries / nested preprocess (used per-variant in ocr.ts). */ lite?: boolean };
 
-export async function recognizeTicketText(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
+async function recognizeTicketTextInner(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
+  const lite = opts?.lite === true;
   const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
   const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
-  const { uri: friendlyUri, dispose: disposeFriendly } = await ensureOcrFriendlyResolution(preparedUri);
+  const { uri: friendlyUri, dispose: disposeFriendly } = lite
+    ? { uri: preparedUri, dispose: async () => {} }
+    : await ensureOcrFriendlyResolution(preparedUri);
   const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(friendlyUri);
   let best: MlKitResult = { text: '' };
   try {
-    best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, sizedUri));
-    if ((best.text ?? '').trim().length < 24) {
-      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, friendlyUri));
-    }
-    if ((best.text ?? '').trim().length < 24) {
-      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, preparedUri));
-    }
-    const lot = opts?.lotteryId;
-    if ((best.text ?? '').trim().length < 24 && lot) {
-      try {
-        const { preprocessTicketImageForOcr } = await import('../ticketPreprocess/preprocessTicketImage');
-        const pre = await preprocessTicketImageForOcr(uri, lot, {
-          fromDocumentScan: true,
-        });
-        try {
-          for (const variant of pre.variantUris) {
-            best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, variant));
-            if ((best.text ?? '').trim().length > 48) break;
-          }
-        } finally {
-          await pre.cleanup();
-        }
-      } catch {
-        /* ignore */
-      }
+    best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, sizedUri, lite));
+    if (!lite && (best.text ?? '').trim().length < 24) {
+      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, friendlyUri, false));
     }
     return best;
   } finally {
     await disposeSized();
     await disposeFriendly();
     await disposePrepared();
+  }
+}
+
+export async function recognizeTicketText(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
+  try {
+    return await withTimeout(
+      recognizeTicketTextInner(uri, opts),
+      RECOGNIZE_TOTAL_TIMEOUT_MS,
+      'recognizeTicketText',
+    );
+  } catch {
+    return { text: '' };
   }
 }
 

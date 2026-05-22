@@ -31,7 +31,7 @@ import { insertRecord, getRecordById } from '../db/sqlite';
 import { computePrize } from '../engine/prizeEngine';
 import { computeAddOnResults } from '../engine/addOnEngine';
 import { fetchAddOnCatalog, isUserSelectableAddOn } from '../services/addOnCatalog';
-import { getRawOcrText, parseTicketFromImage } from '../services/ocr';
+import { parseTicketFromImage } from '../services/ocr';
 import { deleteDebugVariantUris } from '../services/ticketPreprocess/debugCopy';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
@@ -657,8 +657,7 @@ export default function CheckTicketScreen({
       const DocumentScanner = require('react-native-document-scanner-plugin').default;
       const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
         maxNumDocuments: 1,
-        croppedImageQuality: 100,
-        responseType: 'imageFilePath',
+        croppedImageQuality: 95,
       });
       if (scanStatus === 'cancel' || !scannedImages?.length) return;
       const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
@@ -698,7 +697,7 @@ export default function CheckTicketScreen({
       lotteryId === 'powerball' || lotteryId === 'mega_millions'
         ? Math.max(def?.plays_per_ticket ?? 1, MAX_OCR_PLAYS_PB_MM)
         : (def?.plays_per_ticket ?? 1);
-    const parsed = await parseTicketFromImage(uri, def ? {
+    const parsePromise = parseTicketFromImage(uri, def ? {
       mainCount: def.main_count,
       mainMax: def.main_max,
       specialMin: def.special_min ?? 1,
@@ -721,6 +720,10 @@ export default function CheckTicketScreen({
           }
         : {}),
     } : undefined);
+    const parsed = await Promise.race([
+      parsePromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 55_000)),
+    ]);
 
     setOcrRawText(parsed?.rawText ?? null);
     if (__DEV__) setOcrAddOnsDebug(parsed?.addOnsDetected ? JSON.stringify(parsed.addOnsDetected) : 'null');
@@ -852,10 +855,7 @@ export default function CheckTicketScreen({
     };
 
     if (parsed?.rawText) {
-      let dateResult = normalizeDateCandidates(parsed.rawText, lotteryId);
-      if (dateResult.candidates.length === 0) {
-        dateResult = await parseTicketDateFromImage(uri, lotteryId);
-      }
+      const dateResult = normalizeDateCandidates(parsed.rawText, lotteryId);
       if (dateResult.candidates.length > 0) {
         setOcrDateDetected(true);
         if (dateResult.needsUserConfirm || !dateResult.dateISO) {
@@ -868,6 +868,13 @@ export default function CheckTicketScreen({
       } else {
         setOcrDateDetected(false);
         setDateStatusMsg('No date detected from ticket. Please select draw date manually.');
+      }
+      if (!parsed.mainNumbers?.length && !parsed.allSets?.length) {
+        setDateStatusMsg(
+          lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
+            ? 'OCR read text but could not find play lines. Please enter numbers manually.'
+            : 'OCR read text but could not find play numbers. Please enter numbers manually.',
+        );
       }
     } else {
       if (!parsed && uri) {
@@ -884,29 +891,21 @@ export default function CheckTicketScreen({
         }
       }
       setOcrDateDetected(false);
-      let failMsg = parsed
-        ? 'No date detected from ticket. Please select draw date manually.'
+      const failMsg = parsed
+        ? parsed.mainNumbers?.length || parsed.allSets?.length
+          ? 'No date detected from ticket. Please select draw date manually.'
+          : lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
+            ? 'OCR read text but could not find play lines. Please enter numbers manually.'
+            : 'OCR read text but could not find play numbers. Please enter numbers manually.'
         : 'OCR could not read text. Use Scan ticket with good lighting, or enter numbers manually.';
-      if (!parsed?.mainNumbers?.length && !parsed?.allSets?.length) {
-        try {
-          const raw = await getRawOcrText(uri, lotteryId);
-          const n = raw?.fullText?.trim().length ?? 0;
-          if (n > 12) {
-            failMsg =
-              lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
-                ? 'OCR read text but could not find play lines. Please enter numbers manually.'
-                : 'OCR read text but could not find play numbers. Please enter numbers manually.';
-          }
-        } catch {
-          /* ignore */
-        }
-      }
       setDateStatusMsg(failMsg);
     }
 
       if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
         scrollToNumbersSection();
       }
+    } catch {
+      setDateStatusMsg('Scan processing failed or timed out. Please try again or enter numbers manually.');
     } finally {
       setOcrReading(false);
     }
