@@ -1,8 +1,23 @@
 import * as ImageManipulator from 'expo-image-manipulator';
+import { isSupported as mlkitIsSupported, recognizeText as mlkitRecognizeText } from 'expo-mlkit-ocr';
 import { Image, Platform } from 'react-native';
 import type { LotteryId } from '../../types/lottery';
 import { deleteUriIfLocal, readJpegUriToRgba } from '../ticketPreprocess/codec';
 import type { MlKitResult } from './types';
+
+/** Resolve recognizeText across expo-mlkit-ocr export shapes (0.2.x named vs legacy default). */
+function resolveMlkitRecognizeText(): (uri: string) => Promise<{ text?: string; blocks?: MlKitResult['blocks'] }> {
+  if (typeof mlkitRecognizeText === 'function') {
+    return mlkitRecognizeText;
+  }
+  const mod = require('expo-mlkit-ocr') as {
+    recognizeText?: (uri: string) => Promise<{ text?: string; blocks?: MlKitResult['blocks'] }>;
+    default?: { recognizeText?: (uri: string) => Promise<{ text?: string; blocks?: MlKitResult['blocks'] }> };
+  };
+  if (typeof mod.recognizeText === 'function') return mod.recognizeText;
+  if (typeof mod.default?.recognizeText === 'function') return mod.default.recognizeText;
+  throw new Error('expo-mlkit-ocr: recognizeText is not available (rebuild native app after install)');
+}
 
 /** Native ML Kit rejects InputImage when width or height is under 32 (expo-mlkit-ocr error message). */
 const ML_KIT_MIN_DIM = 32;
@@ -148,28 +163,65 @@ function pickRicherMlKitResult(a: MlKitResult, b: MlKitResult): MlKitResult {
 }
 
 async function invokeMlKitOnUri(
-  ExpoMlkitOcr: { recognizeText: (u: string) => Promise<unknown> },
+  recognizeTextFn: (u: string) => Promise<{ text?: string; blocks?: MlKitResult['blocks'] }>,
   uri: string,
   lite: boolean,
-): Promise<MlKitResult> {
+): Promise<MlKitResult & { lastError?: string }> {
   let best: MlKitResult = { text: '' };
+  let lastError: string | undefined;
   const candidates = lite ? mlKitUriCandidates(uri).slice(0, 1) : mlKitUriCandidates(uri);
   for (const candidate of candidates) {
     try {
-      const raw = await withTimeout(
-        ExpoMlkitOcr.recognizeText(candidate),
+      const result = await withTimeout(
+        recognizeTextFn(candidate),
         ML_KIT_CALL_TIMEOUT_MS,
         'ML Kit recognizeText',
       );
-      const result = raw as { text?: string; blocks?: MlKitResult['blocks'] };
       const next: MlKitResult = { text: result?.text ?? '', blocks: result?.blocks };
       best = pickRicherMlKitResult(best, next);
       if ((best.text ?? '').trim().length > 48) break;
-    } catch {
-      /* next candidate */
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.warn('[mlkit] recognizeText failed', { candidate: candidate.slice(0, 72), lastError });
+      }
     }
   }
-  return best;
+  return lastError ? { ...best, lastError } : best;
+}
+
+export type OcrUriDiagnostic = {
+  isSupported: boolean;
+  recognizeTextBound: boolean;
+  attempts: Array<{ label: string; uri: string; textLen: number; error?: string }>;
+};
+
+/** __DEV__ helper: one-shot native OCR probe (surfaces IMAGE_LOAD_FAILED vs empty recognition). */
+export async function diagnoseOcrUri(uri: string): Promise<OcrUriDiagnostic> {
+  const recognizeTextFn = resolveMlkitRecognizeText();
+  const attempts: OcrUriDiagnostic['attempts'] = [];
+  const run = async (label: string, u: string) => {
+    try {
+      const r = await recognizeTextFn(u);
+      attempts.push({ label, uri: u.slice(0, 80), textLen: (r?.text ?? '').trim().length });
+    } catch (e) {
+      attempts.push({
+        label,
+        uri: u.slice(0, 80),
+        textLen: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  await run('raw', uri);
+  for (const c of mlKitUriCandidates(uri).slice(1, 3)) {
+    await run('candidate', c);
+  }
+  return {
+    isSupported: mlkitIsSupported(),
+    recognizeTextBound: typeof recognizeTextFn === 'function',
+    attempts,
+  };
 }
 
 /**
@@ -269,24 +321,50 @@ export type RecognizeTicketTextOptions = { lotteryId?: LotteryId; /** Skip retri
 
 async function recognizeTicketTextInner(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
   const lite = opts?.lite === true;
-  const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
-  const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
-  const { uri: friendlyUri, dispose: disposeFriendly } = lite
-    ? { uri: preparedUri, dispose: async () => {} }
-    : await ensureOcrFriendlyResolution(preparedUri);
-  const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(friendlyUri);
+  const recognizeTextFn = resolveMlkitRecognizeText();
   let best: MlKitResult = { text: '' };
-  try {
-    best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, sizedUri, lite));
-    if (!lite && (best.text ?? '').trim().length < 24) {
-      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(ExpoMlkitOcr, friendlyUri, false));
+
+  const enough = (t: MlKitResult) => (t.text ?? '').trim().length >= 16;
+
+  // 1) Scanner file as-is (worked before URI re-encode changes; best for Lotto Max full slips).
+  best = pickRicherMlKitResult(best, await invokeMlKitOnUri(recognizeTextFn, uri, false));
+  if (enough(best)) return best;
+
+  // 2) Crop tall slips + widen before ML Kit (numbers too small on full-length photo).
+  if (!lite) {
+    const { uri: friendlyUri, dispose: disposeFriendly } = await ensureOcrFriendlyResolution(uri);
+    try {
+      const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(friendlyUri);
+      try {
+        best = pickRicherMlKitResult(best, await invokeMlKitOnUri(recognizeTextFn, sizedUri, false));
+        if (enough(best)) return best;
+        best = pickRicherMlKitResult(best, await invokeMlKitOnUri(recognizeTextFn, friendlyUri, false));
+        if (enough(best)) return best;
+      } finally {
+        await disposeSized();
+      }
+    } finally {
+      await disposeFriendly();
     }
-    return best;
+  }
+
+  // 3) Re-encode path for Play/Android URI quirks (release builds).
+  const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
+  try {
+    const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(preparedUri);
+    try {
+      best = pickRicherMlKitResult(best, await invokeMlKitOnUri(recognizeTextFn, sizedUri, lite));
+      if (!enough(best)) {
+        best = pickRicherMlKitResult(best, await invokeMlKitOnUri(recognizeTextFn, preparedUri, false));
+      }
+    } finally {
+      await disposeSized();
+    }
   } finally {
-    await disposeSized();
-    await disposeFriendly();
     await disposePrepared();
   }
+
+  return best;
 }
 
 export async function recognizeTicketText(uri: string, opts?: RecognizeTicketTextOptions): Promise<MlKitResult> {
@@ -328,11 +406,11 @@ export type MlKitRecognizeDetailed = MlKitResult & {
 };
 
 export async function recognizeTicketTextDetailed(uri: string): Promise<MlKitRecognizeDetailed> {
-  const ExpoMlkitOcr = require('expo-mlkit-ocr').default;
+  const recognizeTextFn = resolveMlkitRecognizeText();
   const { uri: preparedUri, dispose: disposePrepared } = await prepareUriForMlKit(uri);
   const { uri: sizedUri, dispose: disposeSized } = await ensureMlKitMinDimensions(preparedUri);
   try {
-    const result = await ExpoMlkitOcr.recognizeText(sizedUri);
+    const result = await recognizeTextFn(sizedUri);
     const rawNative = result as unknown;
     return {
       text: result?.text ?? '',

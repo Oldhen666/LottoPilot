@@ -12,3 +12,8 @@
 -keep class com.facebook.react.turbomodule.** { *; }
 
 # Add any project specific keep options here:
+
+# ML Kit text recognition (only applies when android.enableMinifyInReleaseBuilds=true)
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.** { *; }
+-keep class expo.modules.mlkitocr.** { *; }

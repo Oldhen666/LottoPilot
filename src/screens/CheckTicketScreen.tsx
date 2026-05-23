@@ -726,6 +726,16 @@ export default function CheckTicketScreen({
     ]);
 
     setOcrRawText(parsed?.rawText ?? null);
+    if (__DEV__ && !parsed?.rawText?.trim()) {
+      console.warn('[CheckTicket] ML Kit returned no text', { lotteryId, uri: uri.slice(0, 80) });
+      try {
+        const { diagnoseOcrUri } = await import('../services/powerballOcr/mlkitRecognize');
+        const diag = await diagnoseOcrUri(uri);
+        console.warn('[CheckTicket] OCR diagnostic', JSON.stringify(diag));
+      } catch (e) {
+        console.warn('[CheckTicket] OCR diagnostic failed', e);
+      }
+    }
     if (__DEV__) setOcrAddOnsDebug(parsed?.addOnsDetected ? JSON.stringify(parsed.addOnsDetected) : 'null');
     setOcrBestVariant(__DEV__ ? (parsed as any)?.debugOcrVariant ?? null : null);
     if (__DEV__ && parsed?.rawText) {
