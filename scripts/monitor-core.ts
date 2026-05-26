@@ -48,6 +48,10 @@ export type Status = {
    * 仅 lotto_max / lotto_649：最新一条是否含 OLG ENCORE 官方 7 位（encore_number）。
    */
   encore_ok: boolean | null;
+  /** 仅 powerball：最新期是否含 Power Play 倍数 */
+  power_play_ok: boolean | null;
+  /** 仅 mega_millions：最新期是否含 Mega Millions 倍数 */
+  mega_multiplier_ok: boolean | null;
 };
 
 function toDateKey(dateStr: string): string {
@@ -111,7 +115,9 @@ export async function fetchLatestDates(): Promise<Status[]> {
 
     const { data, error } = await supabase
       .from('draws')
-      .select('draw_date, extra_number, encore_number')
+      .select(
+        'draw_date, extra_number, encore_number, power_play_multiplier, mega_multiplier',
+      )
       .eq('lottery_id', id)
       .order('draw_date', { ascending: false })
       .limit(1)
@@ -126,6 +132,8 @@ export async function fetchLatestDates(): Promise<Status[]> {
         expected_latest: expected,
         extra_ok: id === 'lotto_max' || id === 'lotto_649' ? false : null,
         encore_ok: id === 'lotto_max' || id === 'lotto_649' ? false : null,
+        power_play_ok: id === 'powerball' ? false : null,
+        mega_multiplier_ok: id === 'mega_millions' ? false : null,
       });
       continue;
     }
@@ -134,6 +142,18 @@ export async function fetchLatestDates(): Promise<Status[]> {
     const isCaMain = id === 'lotto_max' || id === 'lotto_649';
     const extra_ok = isCaMain ? hasSevenDigitField((data as { extra_number?: string }).extra_number) : null;
     const encore_ok = isCaMain ? hasSevenDigitField((data as { encore_number?: string }).encore_number) : null;
+    const row = data as {
+      power_play_multiplier?: number | null;
+      mega_multiplier?: number | null;
+    };
+    const power_play_ok =
+      id === 'powerball'
+        ? row.power_play_multiplier != null && Number(row.power_play_multiplier) >= 2
+        : null;
+    const mega_multiplier_ok =
+      id === 'mega_millions'
+        ? row.mega_multiplier != null && Number(row.mega_multiplier) >= 2
+        : null;
     const days = daysBetween(latest, now);
 
     let stale = false;
@@ -151,6 +171,8 @@ export async function fetchLatestDates(): Promise<Status[]> {
       expected_latest: expected,
       extra_ok,
       encore_ok,
+      power_play_ok,
+      mega_multiplier_ok,
     });
   }
 

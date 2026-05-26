@@ -129,8 +129,10 @@ const HTML = `<!DOCTYPE html>
         var bits = [];
         if (s.extra_ok !== null && s.extra_ok !== undefined) bits.push('EXTRA:' + (s.extra_ok ? '✓' : '缺'));
         if (s.encore_ok !== null && s.encore_ok !== undefined) bits.push('ENCORE:' + (s.encore_ok ? '✓' : '缺'));
+        if (s.power_play_ok !== null && s.power_play_ok !== undefined) bits.push('PowerPlay:' + (s.power_play_ok ? '✓' : '缺'));
+        if (s.mega_multiplier_ok !== null && s.mega_multiplier_ok !== undefined) bits.push('MegaMult:' + (s.mega_multiplier_ok ? '✓' : '缺'));
         const addon = bits.length ? '<div class="exp">' + bits.join(' · ') + '</div>' : '';
-        const addonWarn = s.extra_ok === false || s.encore_ok === false;
+        const addonWarn = s.extra_ok === false || s.encore_ok === false || s.power_play_ok === false || s.mega_multiplier_ok === false;
         const badge = s.stale ? '<span class="badge warn">需更新</span>' : '<span class="badge ok">正常</span>';
         var cardCls = 'card' + (s.stale ? ' stale' : '') + (addonWarn ? ' addon-warn' : '');
         return '<div class="' + cardCls + '">' +

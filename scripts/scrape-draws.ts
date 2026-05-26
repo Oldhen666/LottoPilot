@@ -4,6 +4,10 @@
  * Loads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY from .env automatically.
  * Run: npm run scrape
  * Full history: FETCH_HISTORY=1 npm run scrape
+ *
+ * Add-ons: after main draws, backfills WCLC EXTRA (extra_number), OLG ENCORE (encore_number),
+ * ALC TAG (alc_tag), and US Power Play / Mega multiplier on each game's upsert.
+ * Local check: npm run monitor (EXTRA/ENCORE/PowerPlay flags on latest draw).
  */
 
 import 'dotenv/config';
@@ -634,6 +638,100 @@ async function updateEncoreOnly(lotteryId: string, drawDate: string, encoreNumbe
   console.log(`Updated ENCORE ${lotteryId} ${drawDate}: ${encoreNumber}`);
 }
 
+type ExtraItem = { draw_date: string; extra_number: string };
+
+/** WCLC EXTRA 7-digit from lottoresult.ca draw detail pages (CI path often skips WCLC HTML). */
+async function scrapeExtraFromLottoResult(
+  game: 'lotto-max' | 'lotto-649',
+  limit = 15,
+): Promise<ExtraItem[]> {
+  const results: ExtraItem[] = [];
+  const extraPatterns = [
+    /(?:WCLC\s+)?EXTRA(?:\s+Winning\s+Number)?[:\s]+(\d{7})\b/i,
+    /EXTRA\s+Ticket\s+Number[:\s]+(\d{7})\b/i,
+    /\bExtra:\s*(\d{7})\b/i,
+    /Extra\s+number[:\s]+(\d{7})\b/i,
+  ];
+  try {
+    const listUrl = `https://www.lottoresult.ca/${game}-results`;
+    const listRes = await fetchLottoResult(listUrl);
+    const listHtml = await listRes.text();
+    const linkRe = new RegExp(`/${game}-results-([a-z]{3})-([0-9]{1,2})-([0-9]{4})`, 'gi');
+    const matches = [...listHtml.matchAll(linkRe)];
+    const seen = new Set<string>();
+    const toFetch: { month: string; day: string; year: string }[] = [];
+    for (const m of matches) {
+      const key = `${m[3]}-${String(MONTH_ABBR[m[1].toLowerCase()] ?? 0).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      toFetch.push({ month: m[1], day: m[2], year: m[3] });
+      if (toFetch.length >= limit) break;
+    }
+
+    for (const { month, day, year } of toFetch) {
+      const detailUrl = `https://www.lottoresult.ca/${game}-results-${month}-${day}-${year}`;
+      const detailRes = await fetchLottoResult(detailUrl);
+      const detailHtml = await detailRes.text();
+      let extra_number: string | undefined;
+      for (const re of extraPatterns) {
+        const m = detailHtml.match(re);
+        if (m?.[1]) {
+          extra_number = m[1];
+          break;
+        }
+      }
+      if (extra_number) {
+        const draw_date = `${year}-${String(MONTH_ABBR[month.toLowerCase()] ?? 0).padStart(2, '0')}-${day.padStart(2, '0')}`;
+        results.push({ draw_date, extra_number });
+      }
+      await sleep(800);
+    }
+  } catch (e) {
+    console.error('WCLC EXTRA (lottoresult detail) scrape error:', e);
+  }
+  return results;
+}
+
+async function updateExtraOnly(lotteryId: string, drawDate: string, extraNumber: string) {
+  const digits = String(extraNumber).replace(/\D/g, '');
+  if (digits.length < 7) return;
+  const normalized = digits.slice(-7);
+  const { error } = await supabase
+    .from('draws')
+    .update({ extra_number: normalized })
+    .eq('lottery_id', lotteryId)
+    .eq('draw_date', drawDate);
+  if (error) throw error;
+  console.log(`Updated EXTRA ${lotteryId} ${drawDate}: ${normalized}`);
+}
+
+/** Merge WCLC EXTRA page into existing draw rows (main numbers may have come from lottoresult.ca). */
+async function backfillExtraFromWclc(lotteryId: 'lotto_max' | 'lotto_649', limit = 15) {
+  const mainCount = lotteryId === 'lotto_max' ? 7 : 6;
+  const url =
+    lotteryId === 'lotto_max'
+      ? 'https://www.wclc.com/winning-numbers/lotto-max-extra.htm'
+      : 'https://www.wclc.com/winning-numbers/lotto-649-extra.htm';
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'LottoPilot/1.0 (compliance; ticket-check only)' },
+    });
+    const html = await res.text();
+    const draws = parseWclcDraws(html, mainCount, true).filter((d) => d.extra_number);
+    let n = 0;
+    for (const d of draws.slice(0, limit)) {
+      if (!d.extra_number) continue;
+      if (!DRY_RUN) await updateExtraOnly(lotteryId, d.draw_date, d.extra_number);
+      n++;
+    }
+    console.log(
+      `${lotteryId} WCLC EXTRA backfill: ${DRY_RUN ? 'would update' : 'updated'} ${n} draws`,
+    );
+  } catch (e) {
+    console.error(`${lotteryId} WCLC EXTRA backfill error:`, e);
+  }
+}
+
 async function main() {
   if (!DRY_RUN && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
     console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
@@ -662,14 +760,34 @@ async function main() {
     await sleep(DELAY_MS);
   }
 
-  // Phase 1: OLG ENCORE (Ontario) - from lottoresult.ca draw detail pages
-  const encoreLimit = FETCH_HISTORY ? 20 : 5;
+  // Phase 1: WCLC EXTRA + OLG ENCORE — detail pages (needed when main draws came from lottoresult list without EXTRA)
+  const addonDetailLimit = FETCH_HISTORY ? 20 : 15;
   for (const { lotteryId, game } of [
-    { lotteryId: 'lotto_max', game: 'lotto-max' as const },
-    { lotteryId: 'lotto_649', game: 'lotto-649' as const },
+    { lotteryId: 'lotto_max' as const, game: 'lotto-max' as const },
+    { lotteryId: 'lotto_649' as const, game: 'lotto-649' as const },
   ]) {
     try {
-      const encoreList = await scrapeOlgEncoreFromLottoResult(game, encoreLimit);
+      const extraList = await scrapeExtraFromLottoResult(game, addonDetailLimit);
+      if (!DRY_RUN) {
+        for (const { draw_date, extra_number } of extraList) {
+          await updateExtraOnly(lotteryId, draw_date, extra_number);
+        }
+      }
+      console.log(`WCLC EXTRA (${lotteryId}): ${DRY_RUN ? 'would update' : 'updated'} ${extraList.length} draws`);
+    } catch (e) {
+      console.error(`WCLC EXTRA (${lotteryId}) failed:`, e);
+    }
+    await sleep(DELAY_MS);
+
+    try {
+      await backfillExtraFromWclc(lotteryId, addonDetailLimit);
+    } catch (e) {
+      console.error(`WCLC EXTRA HTML (${lotteryId}) failed:`, e);
+    }
+    await sleep(DELAY_MS);
+
+    try {
+      const encoreList = await scrapeOlgEncoreFromLottoResult(game, addonDetailLimit);
       if (!DRY_RUN) {
         for (const { draw_date, encore_number } of encoreList) {
           await updateEncoreOnly(lotteryId, draw_date, encore_number);

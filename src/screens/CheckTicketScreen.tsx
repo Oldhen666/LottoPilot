@@ -86,6 +86,22 @@ const MIN_FLEX_LINES = 3;
 const MAX_UI_LINES = 10;
 const MAX_OCR_PLAYS_PB_MM = MAX_UI_LINES;
 
+/** Default play lines on Check Ticket (official quick-pick caps: LM often 3, BC bundles 4; 6/49 standard 3). */
+function defaultUiLinesForLottery(lotteryId: LotteryId): number {
+  if (lotteryId === 'lotto_max') return 4;
+  if (lotteryId === 'lotto_649') return 3;
+  return MIN_FLEX_LINES;
+}
+
+function supportsFlexibleLines(lotteryId: LotteryId): boolean {
+  return (
+    lotteryId === 'powerball' ||
+    lotteryId === 'mega_millions' ||
+    lotteryId === 'lotto_max' ||
+    lotteryId === 'lotto_649'
+  );
+}
+
 /** Check UI: hide multipliers (prize-only); does not affect match logic */
 const HIDDEN_ADD_ON_CODES = new Set<string>(['POWER_PLAY', 'DOUBLE_PLAY', 'MEGA_MULTIPLIER']);
 interface Props {
@@ -135,7 +151,7 @@ export default function CheckTicketScreen({
   const [specialByLine, setSpecialByLine] = useState<string[]>([]);
   const [allSets, setAllSets] = useState<number[][]>([]);
   /** UI: how many lines to show (default 3, user can add up to 10). */
-  const [uiLines, setUiLines] = useState<number>(MIN_FLEX_LINES);
+  const [uiLines, setUiLines] = useState<number>(() => defaultUiLinesForLottery(preselectedLottery));
   /** OCR may detect >10 lines; we cap at 10 and show a hint. */
   const [ocrExtraLinesCount, setOcrExtraLinesCount] = useState<number>(0);
   const [selectedDraw, setSelectedDraw] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] } | null>(null);
@@ -238,7 +254,7 @@ export default function CheckTicketScreen({
     setOcrExtraLinesCount(0);
     const def = LOTTERY_DEFS[lotteryId];
     const cnt = def?.main_count ?? 7;
-    const plays = MIN_FLEX_LINES;
+    const plays = defaultUiLinesForLottery(lotteryId);
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
     setUiLines(plays);
@@ -280,7 +296,7 @@ export default function CheckTicketScreen({
     });
     const d = LOTTERY_DEFS[lotteryId];
     const cnt = d?.main_count ?? 7;
-    const plays = MIN_FLEX_LINES;
+    const plays = defaultUiLinesForLottery(lotteryId);
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
     setUiLines(plays);
@@ -760,7 +776,10 @@ export default function CheckTicketScreen({
       if (parsed.allSets?.length) {
         const cnt = def?.main_count ?? 7;
         const detected = parsed.allSets.length;
-        const targetLines = Math.min(MAX_UI_LINES, Math.max(MIN_FLEX_LINES, detected));
+        const targetLines = Math.min(
+          MAX_UI_LINES,
+          Math.max(defaultUiLinesForLottery(lotteryId), MIN_FLEX_LINES, detected),
+        );
         if (detected > targetLines) setOcrExtraLinesCount(detected - targetLines);
         setUiLines(targetLines);
         const padded = parsed.allSets
@@ -772,11 +791,15 @@ export default function CheckTicketScreen({
         const cnt = def?.main_count ?? 7;
         const one = [...parsed!.mainNumbers, ...Array(Math.max(0, cnt - parsed!.mainNumbers.length)).fill(0)].slice(0, cnt);
         const padded = [one];
-        while (padded.length < MIN_FLEX_LINES) padded.push(Array(cnt).fill(0));
-        setUiLines(MIN_FLEX_LINES);
+        const minLines = defaultUiLinesForLottery(lotteryId);
+        while (padded.length < minLines) padded.push(Array(cnt).fill(0));
+        setUiLines(minLines);
         setAllSets(padded);
       }
-      const plays = Math.min(MAX_UI_LINES, Math.max(MIN_FLEX_LINES, uiLines, parsed.allSets?.length ?? 0));
+      const plays = Math.min(
+        MAX_UI_LINES,
+        Math.max(defaultUiLinesForLottery(lotteryId), MIN_FLEX_LINES, uiLines, parsed.allSets?.length ?? 0),
+      );
       if (
         parsed.specialsPerLine?.length &&
         (lotteryId === 'powerball' || lotteryId === 'mega_millions')
@@ -1351,7 +1374,7 @@ export default function CheckTicketScreen({
 
         return (
           <View key={lineIdx} style={styles.lineBlock}>
-            {(def?.plays_per_ticket ?? 1) > 1 && (
+            {(uiLines > 1 || (def?.plays_per_ticket ?? 1) > 1) && (
               <Text style={styles.lineLabel}>Line {lineIdx + 1}</Text>
             )}
             {isPbMm ? (
@@ -1387,7 +1410,7 @@ export default function CheckTicketScreen({
           </View>
         );
       })}
-      {(lotteryId === 'powerball' || lotteryId === 'mega_millions') && uiLines < MAX_UI_LINES && (
+      {supportsFlexibleLines(lotteryId) && uiLines < MAX_UI_LINES && (
         <TouchableOpacity
           style={styles.addLineBtn}
           onPress={() => {
@@ -1400,11 +1423,13 @@ export default function CheckTicketScreen({
                 while (next.length < nextLines) next.push(Array(cnt).fill(0));
                 return next;
               });
-              setSpecialByLine((cur) => {
-                const next = [...cur];
-                while (next.length < nextLines) next.push('');
-                return next;
-              });
+              if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+                setSpecialByLine((cur) => {
+                  const next = [...cur];
+                  while (next.length < nextLines) next.push('');
+                  return next;
+                });
+              }
               return nextLines;
             });
           }}

@@ -39,10 +39,17 @@ function formatStatus(status: Status[]): string {
       const flag = s.stale ? ' ⚠️ 需更新' : ' ✓';
       const exp = s.expected_latest ? ` 应有≥${s.expected_latest}` : '';
       let addon = '';
-      if (s.extra_ok !== null || s.encore_ok !== null) {
+      if (
+        s.extra_ok !== null ||
+        s.encore_ok !== null ||
+        s.power_play_ok !== null ||
+        s.mega_multiplier_ok !== null
+      ) {
         const bits: string[] = [];
         if (s.extra_ok !== null) bits.push(`EXTRA:${s.extra_ok ? '✓' : '缺'}`);
         if (s.encore_ok !== null) bits.push(`ENCORE:${s.encore_ok ? '✓' : '缺'}`);
+        if (s.power_play_ok !== null) bits.push(`PowerPlay:${s.power_play_ok ? '✓' : '缺'}`);
+        if (s.mega_multiplier_ok !== null) bits.push(`MegaMult:${s.mega_multiplier_ok ? '✓' : '缺'}`);
         addon = ` · ${bits.join(' ')}`;
       }
       lines.push(`  ${label}: 最新 ${s.latest_date} (${s.days_ago} 天前)${exp}${flag}${addon}`);
@@ -64,12 +71,15 @@ async function runCheck(showAlways = true): Promise<Status[]> {
     console.log('---\n');
   }
 
-  const addonMissing = status.filter(
-    (s) =>
-      (s.lottery_id === 'lotto_max' || s.lottery_id === 'lotto_649') &&
-      s.latest_date &&
-      (s.extra_ok === false || s.encore_ok === false),
-  );
+  const addonMissing = status.filter((s) => {
+    if (!s.latest_date) return false;
+    if (s.lottery_id === 'lotto_max' || s.lottery_id === 'lotto_649') {
+      return s.extra_ok === false || s.encore_ok === false;
+    }
+    if (s.lottery_id === 'powerball') return s.power_play_ok === false;
+    if (s.lottery_id === 'mega_millions') return s.mega_multiplier_ok === false;
+    return false;
+  });
 
   if (alarmOn && (anyStale || addonMissing.length > 0)) {
     beep();
@@ -80,8 +90,8 @@ async function runCheck(showAlways = true): Promise<Status[]> {
     if (addonMissing.length > 0) {
       const names = addonMissing.map((s) => LOTTERY_LABELS[s.lottery_id] ?? s.lottery_id);
       console.log(
-        `🔔 加奖号码: ${names.join(' / ')} 最新期缺少 EXTRA 或 ENCORE 官方号（draws.extra_number / encore_number）。` +
-          `「更新数据库」会运行 scrape 并尝试一并写入。\n`,
+        `🔔 加奖数据: ${names.join(' / ')} 最新期缺少官方加奖字段（EXTRA/ENCORE/Power Play/Mega 倍数等）。` +
+          `输入 u 运行 npm run scrape 回填。\n`,
       );
     }
   }
