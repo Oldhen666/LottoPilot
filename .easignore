@@ -3,11 +3,14 @@ lottery-tracker/
 electron/
 **/.next/
 **/dist/
+node_modules/
 android/.gradle/
 android/app/build/
 android/app/.cxx/
 **/.cxx/
 android/build/
+.diag_sample*/
+docs/geo_seg_outputs/
 *.log
 logs/
 .git/
