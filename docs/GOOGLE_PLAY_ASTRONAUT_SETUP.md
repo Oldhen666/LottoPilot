@@ -51,10 +51,12 @@
 | 场景 | 按钮文案 | 购买流程 |
 |------|----------|----------|
 | 首次用户 | Start 1-month free trial | 使用 free trial offer token |
-| 回归用户（曾订阅过） | Upgrade to Astronaut plan | 使用 base plan（无 offer） |
+| 回归用户（曾订阅过） | Subscribe to Astronaut | 使用 base plan（无 offer） |
 
 - **had_astronaut_subscription**：存储在 Supabase `entitlements` 表，购买成功后设为 `true`，永不回退
 - 回归用户通过 `getHadAstronautSubscription()` 判断，使用 `{ skus: [sku] }` 发起购买，不传 offer token
+- **Astronaut 不包含 Compass**：Compass 免广告需单独购买 Pirate 一次性商品（`lottopilot_pirate`）
+- 订阅条款文案：`src/constants/subscriptionLegal.ts` + `SubscriptionLegalText`（Settings / Strategy Lab 付费墙）
 
 ---
 

@@ -52,7 +52,13 @@ import { getTotalRefinesForSet, incrementRefineTotalForSet } from '../services/s
 import { showRewardedAdForStrategyLab, REWARDED_AD_MESSAGES } from '../services/rewardedAdService';
 import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
 import { TuningWeightSpectrumRow } from '../components/TuningWeightSpectrumRow';
-import { isIAPAvailable, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatAstronautPrice } from '../services/iap';
+import { isIAPAvailable, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatAstronautRenewalPrice } from '../services/iap';
+import { SubscriptionLegalText } from '../components/SubscriptionLegalText';
+import {
+  ASTRONAUT_FEATURE_BULLETS,
+  astronautPaidOnlyDisclosureLines,
+  astronautTrialDisclosureLines,
+} from '../constants/subscriptionLegal';
 import { getLastHomeLottery, setLastHomeLottery } from '../services/homeLotteryStorage';
 import {
   getStrategySets,
@@ -207,7 +213,7 @@ export default function StrategyLabScreen() {
   /** Draft weight (0–1) while the tuning popup is open */
   const [editingDraft01, setEditingDraft01] = useState(0.5);
   const [inBookDateKeys, setInBookDateKeys] = useState<Set<string>>(new Set());
-  const [astronautPrice, setAstronautPrice] = useState('$0.99/mo');
+  const [astronautRenewalPrice, setAstronautRenewalPrice] = useState('$0.99/month');
   const refineScrollRef = useRef<ScrollView>(null);
   const refineDateWheelRef = useRef<ScrollView>(null);
   const refineDateWheelIdxRef = useRef(0);
@@ -375,7 +381,7 @@ export default function StrategyLabScreen() {
 
   useEffect(() => {
     if (isIAPAvailable()) {
-      getIAPProducts().then(({ astronaut }) => setAstronautPrice(formatAstronautPrice(astronaut)));
+      getIAPProducts().then(({ astronaut }) => setAstronautRenewalPrice(formatAstronautRenewalPrice(astronaut)));
     }
   }, []);
 
@@ -1513,21 +1519,21 @@ export default function StrategyLabScreen() {
             <Text style={styles.strategyGateTitle}>Continue with Strategy Lab</Text>
             <Text style={styles.strategyGateMsg}>
               {strategyLabGateKind === 'generate'
-                ? "You've completed 2 Generate runs. The next one requires a rewarded ad, or sign in for a free trial, or upgrade to Astronaut."
-                : "You've completed 2 Refine runs. The next one requires a rewarded ad, or sign in for a free trial, or upgrade to Astronaut."}
+                ? "You've completed 2 Generate runs. Watch a rewarded ad, or subscribe to Astronaut for unlimited Strategy Lab access."
+                : "You've completed 2 Refine runs. Watch a rewarded ad, or subscribe to Astronaut for unlimited Strategy Lab access."}
             </Text>
             <TouchableOpacity style={styles.strategyGatePrimary} onPress={handleStrategyLabGateWatchAd}>
               <Text style={styles.strategyGatePrimaryText}>Watch ad</Text>
             </TouchableOpacity>
             {isSignedIn !== true && (
               <TouchableOpacity style={styles.strategyGateSecondary} onPress={handleStrategyLabGateSignIn}>
-                <Text style={styles.strategyGateSecondaryText}>Sign in for free trial</Text>
+                <Text style={styles.strategyGateSecondaryText}>Sign in to subscribe</Text>
               </TouchableOpacity>
             )}
             {isSignedIn === true && (
               <TouchableOpacity style={styles.strategyGateSecondary} onPress={handleStrategyLabGateTrialOrUpgrade}>
                 <Text style={styles.strategyGateSecondaryText}>
-                  {hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Free trial or upgrade to Astronaut'}
+                  {hadAstronautSubscription ? 'Subscribe to Astronaut' : 'Start 1-month free trial'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -2441,23 +2447,31 @@ export default function StrategyLabScreen() {
         statusBarTranslucent
       >
         <Pressable style={styles.modalOverlay} onPress={() => setShowPaywall(false)}>
-          <View style={[styles.paywallCard, { alignSelf: 'center' }]}>
+          <Pressable style={[styles.paywallCard, { alignSelf: 'center' }]} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.paywallTitle}>
-              {hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start your 1-month free trial'}
+              {hadAstronautSubscription ? 'Subscribe to Astronaut' : 'Start your 1-month free trial'}
             </Text>
-            <Text style={styles.paywallDesc}>
-              {`Full Strategy Lab + Compass access\nAd-free experience\nSmarter AI predictions (continuously improving)\nNew features and parameter updates added regularly\n- with ONLY ${astronautPrice}`}
-            </Text>
+            <Text style={styles.paywallDesc}>{ASTRONAUT_FEATURE_BULLETS.join('\n')}</Text>
+            <SubscriptionLegalText
+              compact
+              lines={
+                hadAstronautSubscription
+                  ? astronautPaidOnlyDisclosureLines(astronautRenewalPrice)
+                  : astronautTrialDisclosureLines(astronautRenewalPrice)
+              }
+            />
             <Pressable
               style={({ pressed }) => [styles.purchaseBtn, pressed && { opacity: 0.8 }]}
               onPress={handlePurchasePro}
             >
-              <Text style={styles.purchaseBtnText}>{hadAstronautSubscription ? 'Upgrade to Astronaut plan' : 'Start 1-month free trial'}</Text>
+              <Text style={styles.purchaseBtnText}>
+                {hadAstronautSubscription ? `Subscribe — ${astronautRenewalPrice}` : 'Start 1-month free trial'}
+              </Text>
             </Pressable>
             <Pressable style={styles.cancelBtn} onPress={() => setShowPaywall(false)}>
               <Text style={styles.cancelBtnText}>Maybe later</Text>
             </Pressable>
-          </View>
+          </Pressable>
         </Pressable>
       </Modal>
       </ScrollView>

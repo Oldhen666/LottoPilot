@@ -20,13 +20,7 @@ export async function endIAP(): Promise<void> {}
 
 export function setupPurchaseListeners(_onSuccess: () => void, _onError: () => void): void {}
 
-export function formatPiratePrice(_product: unknown): string {
-  return '$3.49';
-}
-
-export function formatAstronautPrice(_product: unknown): string {
-  return '$0.99/mo';
-}
+export { formatPiratePrice, formatAstronautPrice, formatAstronautRenewalPrice, astronautProductHasTrialOffer } from './iapPricing';
 
 export async function getIAPProducts(): Promise<{ pirate: null; astronaut: null }> {
   return { pirate: null, astronaut: null };

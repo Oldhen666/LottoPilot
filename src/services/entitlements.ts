@@ -201,13 +201,10 @@ export async function canUseAIAsync(): Promise<boolean> {
   return ent.aiSubscribed;
 }
 
-/** Compass: Pirate plan OR Astronaut plan (Astronaut includes Pirate). */
+/** Compass: Pirate one-time purchase only (Astronaut subscription does not unlock Compass). */
 export async function getCompassUnlocked(): Promise<boolean> {
-  const [compass, pro] = await Promise.all([
-    getItem(COMPASS_UNLOCK_KEY),
-    getItem(PRO_UNLOCK_KEY),
-  ]);
-  return compass === 'true' || pro === 'true';
+  const compass = await getItem(COMPASS_UNLOCK_KEY);
+  return compass === 'true';
 }
 
 /** @param opts.sync - 默认 true；restore 时传 false，仅更新本地，由 syncLocalEntitlementsToServer 决定是否同步（避免 license tester 污染 server） */
@@ -314,11 +311,10 @@ export function notifyEntitlementsChange(): void {
   });
 }
 
-/** Clear all subscription/privilege state. Call on logout so next user or re-login starts as free. */
+/** Clear active subscription flags on logout. Keeps had_astronaut so returning users still see paid subscribe (matches Google Play trial eligibility). */
 export async function clearEntitlementsOnLogout(): Promise<void> {
   await Promise.all([
     deleteItem(PRO_UNLOCK_KEY),
-    deleteItem(HAD_ASTRONAUT_KEY),
     deleteItem(USER_REVOKED_ASTRONAUT_KEY),
     deleteItem(PRO_TRIAL_ENDS_KEY),
     deleteItem(AI_SUB_KEY),
