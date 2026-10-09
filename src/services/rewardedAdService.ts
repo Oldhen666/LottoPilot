@@ -6,16 +6,16 @@
 import { Platform } from 'react-native';
 import { REWARDED_AD_UNIT_ID } from '../config/adConfig';
 
-const GATE_MESSAGE = 'Please watch the ad to continue generating picks.';
+const GATE_MESSAGE = 'Please watch the ad to continue.';
 const AD_LOAD_FAILED_MESSAGE = 'Unable to load ad. Please check your internet connection and try again.';
 
 export const REWARDED_AD_MESSAGES = {
   gateRequired: GATE_MESSAGE,
   adLoadFailed: AD_LOAD_FAILED_MESSAGE,
-  modalTitle: 'Continue Generating',
-  modalMessage: "You've reached 3 free generates. Upgrade to remove ads, or continue with the free plan.",
-  upgradeToPiratePlan: 'Upgrade to Pirate Plan',
-  keepFreePlan: 'Keep free plan',
+  modalTitle: 'Continue',
+  /** Compass ad gate — primary / secondary actions */
+  watchAdToContinue: 'Watch an ad to continue',
+  upgradePirateUnlimited: 'Upgrade to Pirate Plan for unlimited usage',
 } as const;
 
 /** Lazy-load AdMob (not available on web) */
@@ -57,6 +57,7 @@ export async function showRewardedAdForGeneratePicks(): Promise<boolean> {
 
   return new Promise<boolean>((resolve) => {
     let resolved = false;
+    let rewardEarned = false;
     const unsubs: (() => void)[] = [];
 
     const finish = (result: boolean) => {
@@ -72,7 +73,7 @@ export async function showRewardedAdForGeneratePicks(): Promise<boolean> {
         rewarded
           .show()
           .then(() => {
-            // Ad shown; wait for EARNED_REWARD or CLOSED
+            // Wait for EARNED_REWARD (sets rewardEarned) then CLOSED to resolve.
           })
           .catch((err: Error) => {
             console.warn('[Ad] Rewarded Ad Show Failed', err?.message);
@@ -84,13 +85,14 @@ export async function showRewardedAdForGeneratePicks(): Promise<boolean> {
     unsubs.push(
       rewarded.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
         console.log('[Ad] Rewarded Ad Completed');
-        finish(true);
+        rewardEarned = true;
       })
     );
 
     unsubs.push(
       rewarded.addAdEventListener(AdEventType.CLOSED, () => {
-        finish(false);
+        // Some SDKs fire CLOSED before EARNED_REWARD; only resolve here using rewardEarned.
+        finish(rewardEarned);
       })
     );
 

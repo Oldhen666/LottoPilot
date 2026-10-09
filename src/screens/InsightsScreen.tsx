@@ -7,7 +7,7 @@ import * as SecureStore from 'expo-secure-store';
 import { DISCLAIMER_SUBSCRIPTION } from '../constants/disclaimers';
 import { generateCandidates, type CandidatePick } from '../utils/localAnalysis';
 import { getRecords } from '../db/sqlite';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { isIAPAvailable, getIAPProducts, formatPiratePrice, formatAstronautPrice } from '../services/iap';
 import type { LotteryId } from '../types/lottery';
 
@@ -92,13 +92,13 @@ export default function InsightsScreen() {
               <Text style={styles.unlockedText}>✓ Unlocked</Text>
             </View>
             <View style={styles.lotteryRow}>
-              {(Object.keys(LOTTERY_DEFS) as LotteryId[]).map((id) => (
+              {SUPPORTED_LOTTERY_IDS.map((id) => (
                 <TouchableOpacity
                   key={id}
                   style={[styles.lotteryPill, selectedLottery === id && styles.lotteryPillActive]}
                   onPress={() => setSelectedLottery(id)}
                 >
-                  <Text style={styles.lotteryPillText}>{LOTTERY_DEFS[id].name}</Text>
+                  <Text style={[styles.lotteryPillText, selectedLottery === id && styles.lotteryPillTextActive]}>{LOTTERY_DEFS[id].name}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -186,7 +186,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
   },
-  purchaseBtnText: { color: COLORS.text, fontWeight: '600' },
+  purchaseBtnText: { color: COLORS.onFill, fontWeight: '600' },
   unlocked: { padding: 10, alignItems: 'center' },
   unlockedText: { color: COLORS.success, fontWeight: '600' },
   lotteryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
@@ -198,6 +198,7 @@ const styles = StyleSheet.create({
   },
   lotteryPillActive: { backgroundColor: COLORS.primary },
   lotteryPillText: { color: COLORS.text, fontSize: 12 },
+  lotteryPillTextActive: { color: COLORS.onFill },
   analyzeBtn: {
     backgroundColor: COLORS.bgElevated,
     padding: 12,
@@ -223,7 +224,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ballSpecial: { backgroundColor: COLORS.success },
-  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 12 },
+  ballText: { color: COLORS.onFill, fontWeight: '700', fontSize: 12 },
   explanation: { color: COLORS.textSecondary, fontSize: 11, marginTop: 8 },
   hint: { color: COLORS.textMuted, fontSize: 12, marginTop: 8 },
 });

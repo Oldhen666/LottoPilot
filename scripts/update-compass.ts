@@ -14,7 +14,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
 
 const DRAWS_SELECT = 'draw_date, winning_numbers';
-const COMPASS_LOTTERIES = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'] as const;
+const COMPASS_LOTTERIES = ['lotto_max', 'lotto_649'] as const;
 
 export async function runCompassUpdate() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {

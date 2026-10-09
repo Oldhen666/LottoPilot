@@ -4,6 +4,7 @@
  */
 
 import type { FeatureId } from '../constants/strategyFeatures';
+import type { StrategyPlayStyleId } from '../constants/strategyPlayStyle';
 
 export type LuckyBiasStrength = 'off' | 'low' | 'medium' | 'high';
 
@@ -12,10 +13,13 @@ export interface StrategySet {
   name: string;
   lotteryId: string;
   featureWeights: Record<FeatureId, number>;
-  /** 1–3 lucky numbers (personal preference, not statistical signal). Optional. */
-  luckyNumbers?: number[];
-  /** Day of month 1–31 for personal bias; optional. */
-  luckyBirthdayDay?: number;
+  /** Auto Pilot: last selected play style (preset base weights + refine on top). */
+  autoPilotPlayStyle?: StrategyPlayStyleId;
+  /**
+   * Single digit 0–9: when Lucky bias is on, boosts weight for main numbers whose **ones digit**
+   * matches (balanced pool phase only; capped by lucky bias strength).
+   */
+  luckyOnesDigit?: number;
   /** Lucky bias strength. Max influence ≤5%. Only affects balanced-pool selection. */
   luckyBiasStrength?: LuckyBiasStrength;
   createdAt: string; // ISO

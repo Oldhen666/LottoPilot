@@ -1,0 +1,64 @@
+{
+  "expected_rows": 5,
+  "vertical_ink_extent": [
+    0,
+    1107
+  ],
+  "boundaries": [
+    0,
+    200,
+    462,
+    637,
+    873,
+    1107
+  ],
+  "rows": [
+    {
+      "y0": 0,
+      "y1": 200,
+      "deskew_deg": 0.0,
+      "crop_wh": [
+        1608,
+        200
+      ]
+    },
+    {
+      "y0": 200,
+      "y1": 462,
+      "deskew_deg": 0.0,
+      "crop_wh": [
+        1608,
+        262
+      ]
+    },
+    {
+      "y0": 462,
+      "y1": 637,
+      "deskew_deg": 0.0,
+      "crop_wh": [
+        1608,
+        175
+      ]
+    },
+    {
+      "y0": 637,
+      "y1": 873,
+      "deskew_deg": 0.0,
+      "crop_wh": [
+        1608,
+        236
+      ]
+    },
+    {
+      "y0": 873,
+      "y1": 1107,
+      "deskew_deg": 0.0,
+      "crop_wh": [
+        1608,
+        234
+      ]
+    }
+  ],
+  "binarize_mode": "otsu_after_clahe",
+  "projection_max": 968.2380952380951
+}

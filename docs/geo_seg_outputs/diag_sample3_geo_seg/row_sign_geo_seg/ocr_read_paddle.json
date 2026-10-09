@@ -1,0 +1,59 @@
+{
+  "bundle": "C:\\Users\\xiang\\Documents\\projects\\LottoPilot\\docs\\geo_seg_outputs\\diag_sample3_geo_seg",
+  "row_count": 5,
+  "rows": [
+    {
+      "file": "row_00_clean.png",
+      "six_pairs": [],
+      "mode": "incomplete",
+      "digits_full": "",
+      "digits_main_roi": "",
+      "digits_pb_roi": ""
+    },
+    {
+      "file": "row_01_clean.png",
+      "six_pairs": [],
+      "mode": "incomplete",
+      "digits_full": "6",
+      "digits_main_roi": "04",
+      "digits_pb_roi": ""
+    },
+    {
+      "file": "row_02_clean.png",
+      "six_pairs": [
+        "19",
+        "24",
+        "97",
+        "46",
+        "55",
+        "19"
+      ],
+      "mode": "full_12_digits",
+      "digits_full": "192497465519"
+    },
+    {
+      "file": "row_03_clean.png",
+      "six_pairs": [
+        "14",
+        "18"
+      ],
+      "mode": "incomplete",
+      "digits_full": "1418",
+      "digits_main_roi": "14",
+      "digits_pb_roi": ""
+    },
+    {
+      "file": "row_04_clean.png",
+      "six_pairs": [
+        "81",
+        "00",
+        "00",
+        "23",
+        "74",
+        "07"
+      ],
+      "mode": "full_12_digits",
+      "digits_full": "8100002374073070260109710083553"
+    }
+  ]
+}

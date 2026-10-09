@@ -38,6 +38,12 @@ logs/
 .env
 .env*.local
 
+# OCR eval harness output
+test_outputs/
+
+# Python venv (local Paddle / tools)
+.venv/
+
 # typescript
 *.tsbuildinfo
 

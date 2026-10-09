@@ -1,0 +1,32 @@
+engine=easyocr
+source=C:\Users\xiang\Documents\projects\LottoPilot\docs\geo_seg_outputs\diag_sample3_geo_seg
+row_count=5
+
+[row_00_clean.png]
+  mode: incomplete
+  six_pairs: 29
+  digits_full: 29
+  digits_main_roi: 
+  digits_pb_roi: 
+
+[row_01_clean.png]
+  mode: full_12_digits
+  six_pairs: 82 10 70 22 91 51
+  digits_full: 82107022915101032002024443027345149624559501112296
+
+[row_02_clean.png]
+  mode: full_12_digits
+  six_pairs: 19 24 37 46 55 19
+  digits_full: 192437465519
+
+[row_03_clean.png]
+  mode: incomplete
+  six_pairs: 96 62 81 41
+  digits_full: 966281418
+  digits_main_roi: 9662814
+  digits_pb_roi: 8
+
+[row_04_clean.png]
+  mode: full_12_digits
+  six_pairs: 00 23 74 07 05 31
+  digits_full: 00237407053163307026040972100835810200

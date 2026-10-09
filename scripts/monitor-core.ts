@@ -14,21 +14,17 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(SUPABASE_URL!, SUPABASE_KEY!);
 
-export const WATCH_LOTTERIES = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'] as const;
+export const WATCH_LOTTERIES = ['lotto_max', 'lotto_649'] as const;
 
 export const LOTTERY_LABELS: Record<string, string> = {
   lotto_max: 'Lotto Max',
   lotto_649: 'Lotto 649',
-  powerball: 'Powerball',
-  mega_millions: 'Mega Millions',
 };
 
 /** 开奖星期（0=周日 … 6=周六），按北美常见档期，与本地日期对齐即可 */
 const DRAW_SCHEDULE: Record<string, number[]> = {
   lotto_max: [2, 5],
   lotto_649: [3, 6],
-  powerball: [1, 3, 6],
-  mega_millions: [2, 5],
 };
 
 export type Status = {
@@ -39,15 +35,14 @@ export type Status = {
   stale: boolean;
   /** 推算的「应有」最近一期日期 YYYY-MM-DD（开奖日） */
   expected_latest: string | null;
-  /**
-   * 仅 lotto_max / lotto_649：最新一条 draws 是否含 WCLC EXTRA 官方 7 位（兑奖用 extra_number）。
-   * null 表示不适用（美系彩种）。
-   */
+  /** 最新一条 draws 是否含 WCLC EXTRA 官方 7 位（兑奖用 extra_number）。 */
   extra_ok: boolean | null;
-  /**
-   * 仅 lotto_max / lotto_649：最新一条是否含 OLG ENCORE 官方 7 位（encore_number）。
-   */
+  /** 最新一条是否含 OLG ENCORE 官方 7 位（encore_number）。 */
   encore_ok: boolean | null;
+  /** 保留字段。当前只监控加拿大彩种，恒为 null。 */
+  power_play_ok: boolean | null;
+  /** 保留字段。当前只监控加拿大彩种，恒为 null。 */
+  mega_multiplier_ok: boolean | null;
 };
 
 function toDateKey(dateStr: string): string {
@@ -124,16 +119,17 @@ export async function fetchLatestDates(): Promise<Status[]> {
         days_ago: null,
         stale: true,
         expected_latest: expected,
-        extra_ok: id === 'lotto_max' || id === 'lotto_649' ? false : null,
-        encore_ok: id === 'lotto_max' || id === 'lotto_649' ? false : null,
+        extra_ok: false,
+        encore_ok: false,
+        power_play_ok: null,
+        mega_multiplier_ok: null,
       });
       continue;
     }
 
     const latest = toDateKey(String(data.draw_date));
-    const isCaMain = id === 'lotto_max' || id === 'lotto_649';
-    const extra_ok = isCaMain ? hasSevenDigitField((data as { extra_number?: string }).extra_number) : null;
-    const encore_ok = isCaMain ? hasSevenDigitField((data as { encore_number?: string }).encore_number) : null;
+    const extra_ok = hasSevenDigitField((data as { extra_number?: string }).extra_number);
+    const encore_ok = hasSevenDigitField((data as { encore_number?: string }).encore_number);
     const days = daysBetween(latest, now);
 
     let stale = false;
@@ -151,6 +147,8 @@ export async function fetchLatestDates(): Promise<Status[]> {
       expected_latest: expected,
       extra_ok,
       encore_ok,
+      power_play_ok: null,
+      mega_multiplier_ok: null,
     });
   }
 
@@ -164,6 +162,64 @@ function getScrapeCwd(): string {
 /** Relative to project root — written when there is no console (e.g. double-click Electron). */
 export const MONITOR_SCRAPE_LOG_REL = path.join('logs', 'monitor-scrape-last.log');
 
+export type ScrapeStatus = {
+  busy: boolean;
+  lastError: string | null;
+  lastFinishedAt: number | null;
+};
+
+const scrapeState: ScrapeStatus = {
+  busy: false,
+  lastError: null,
+  lastFinishedAt: null,
+};
+
+export function getScrapeStatus(): ScrapeStatus {
+  return { ...scrapeState };
+}
+
+export function readScrapeLogTail(maxLines = 12): string {
+  try {
+    const logPath = path.join(getScrapeCwd(), MONITOR_SCRAPE_LOG_REL);
+    if (!fs.existsSync(logPath)) return '';
+    const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/);
+    return lines.filter((l) => l.trim()).slice(-maxLines).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/** Fire-and-forget scrape for Electron / Web UI (non-blocking). */
+export function startUpdate(): { started: boolean; message?: string } {
+  if (scrapeState.busy) {
+    return { started: false, message: '抓取已在运行中，请稍候' };
+  }
+  scrapeState.busy = true;
+  scrapeState.lastError = null;
+  runUpdate()
+    .then(() => {
+      scrapeState.lastFinishedAt = Date.now();
+    })
+    .catch((e: Error) => {
+      scrapeState.lastError = String(e?.message ?? e);
+      scrapeState.lastFinishedAt = Date.now();
+    })
+    .finally(() => {
+      scrapeState.busy = false;
+    });
+  return { started: true };
+}
+
+function augmentPath(env: NodeJS.ProcessEnv, cwd: string): NodeJS.ProcessEnv {
+  const pathKey =
+    process.platform === 'win32'
+      ? Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path'
+      : 'PATH';
+  const extra = [path.join(cwd, 'node_modules', '.bin'), path.dirname(process.execPath)].filter(Boolean);
+  env[pathKey] = [...extra, env[pathKey] || ''].filter(Boolean).join(path.delimiter);
+  return env;
+}
+
 /**
  * Run `npm run scrape` from project root.
  * Windows: use `cmd.exe /c` (spawning npm.cmd with shell:false causes EINVAL).
@@ -172,7 +228,7 @@ export const MONITOR_SCRAPE_LOG_REL = path.join('logs', 'monitor-scrape-last.log
 export function runUpdate(): Promise<void> {
   return new Promise((resolve, reject) => {
     const cwd = getScrapeCwd();
-    const env = { ...process.env };
+    const env = augmentPath({ ...process.env }, cwd);
     delete env.CI;
 
     const isWin = process.platform === 'win32';

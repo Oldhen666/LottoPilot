@@ -18,6 +18,8 @@ import {
 } from 'react-native-iap';
 import { setCompassUnlocked, setProUnlocked, setHadAstronautSubscription, getHadAstronautSubscription, getUserRevokedAstronautFlag, clearUserRevokedAstronautFlag } from './entitlements';
 
+export { formatAstronautPrice, formatAstronautRenewalPrice, formatPiratePrice, astronautProductHasTrialOffer } from './iapPricing';
+
 /** 商品 ID - 必须与 Google Play Console 中创建的一致 */
 export const IAP_PRODUCT_IDS = {
   PIRATE: 'lottopilot_pirate',
@@ -96,29 +98,6 @@ async function handlePurchase(purchase: Purchase, fromRestore = false): Promise<
     await setHadAstronautSubscription(noSync);
   }
   purchaseSuccessCallbacks.forEach((cb) => cb());
-}
-
-/** 从 Product 提取 Pirate 价格字符串（用于 UI，按地区显示） */
-export function formatPiratePrice(product: Product | null): string {
-  if (!product) return '$3.49';
-  const p = product as { localizedPrice?: string; price?: string };
-  return p.localizedPrice ?? p.price ?? '$3.49';
-}
-
-/** 从 Product 提取 Astronaut 订阅价格字符串（用于 UI） */
-export function formatAstronautPrice(product: Product | null): string {
-  if (!product) return '$0.99/mo';
-  const p = product as {
-    localizedPrice?: string;
-    price?: string;
-    subscriptionOfferDetails?: Array<{ pricingPhases?: { pricingPhaseList?: Array<{ formattedPrice?: string }> } }>;
-  };
-  const price =
-    p.localizedPrice ??
-    p.subscriptionOfferDetails?.[0]?.pricingPhases?.pricingPhaseList?.[0]?.formattedPrice ??
-    p.price;
-  if (!price) return '$0.99/mo';
-  return price.includes('/') || price.toLowerCase().includes('mo') ? price : `${price}/mo`;
 }
 
 /** 获取商品信息（价格等） */

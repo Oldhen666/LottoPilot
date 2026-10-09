@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { AppState } from 'react-native';
-import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef, useNavigationState } from '@react-navigation/native';
 import * as Linking from 'expo-linking';
 import { setSessionFromAuthUrl } from './src/services/supabase';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Text, StatusBar, Platform, View } from 'react-native';
+import { Text, StatusBar, Platform, View, Animated, Easing, StyleSheet } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -27,6 +27,7 @@ import ResultScreen from './src/screens/ResultScreen';
 import CompassScreen from './src/screens/CompassScreen';
 import StrategyLabScreen from './src/screens/StrategyLabScreen';
 import PickBookScreen from './src/screens/PickBookScreen';
+import PickEvaluationScreen from './src/screens/PickEvaluationScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DrawsListScreen from './src/screens/DrawsListScreen';
 import LoginScreen from './src/screens/LoginScreen';
@@ -35,41 +36,79 @@ import { getRecordById } from './src/db/sqlite';
 import type { CheckRecord } from './src/db/sqlite';
 
 import type { LotteryId } from './src/types/lottery';
-import CheckTourOverlay, { type CheckTourStepIndex } from './src/components/CheckTourOverlay';
-import {
-  getCheckTourCompleted,
-  setCheckTourCompleted,
-  canStartCheckTour,
-} from './src/services/checkTourStorage';
 import { getLastHomeLottery, setLastHomeLottery } from './src/services/homeLotteryStorage';
+import { maybeRequestPlayReview, recordAppOpen } from './src/services/playReview';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 const navigationRef = createNavigationContainerRef();
 
+function BouncyTabIcon({
+  name,
+  color,
+  size,
+  bounceNonce,
+  focused,
+}: {
+  name: React.ComponentProps<typeof Ionicons>['name'];
+  color: string;
+  size: number;
+  bounceNonce: number;
+  focused: boolean;
+}) {
+  const y = useMemo(() => new Animated.Value(0), []);
+  useEffect(() => {
+    if (!bounceNonce || focused) return;
+    const up = Animated.timing(y, { toValue: -6, duration: 110, easing: Easing.out(Easing.quad), useNativeDriver: true });
+    const down = Animated.timing(y, { toValue: 0, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true });
+    const one = Animated.sequence([up, down]);
+    Animated.sequence([one, one, one]).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bounceNonce, focused]);
+  return (
+    <Animated.View style={{ transform: [{ translateY: y }] }}>
+      <Ionicons name={name} size={size} color={color} />
+    </Animated.View>
+  );
+}
+
 function ResultScreenAsync({
   recordId,
   onDone,
-  onEditNumbers,
+  onBack,
 }: {
   recordId: string;
   onDone: () => void;
-  onEditNumbers?: () => void;
+  onBack: () => void;
 }) {
   const [record, setRecord] = useState<CheckRecord | null>(null);
   useEffect(() => {
     getRecordById(recordId).then(setRecord);
   }, [recordId]);
   if (!record) return <Text style={{ color: COLORS.textSecondary, padding: 20 }}>Loading...</Text>;
-  return <ResultScreen record={record} onDone={onDone} onEditNumbers={onEditNumbers} />;
+  return <ResultScreen record={record} onDone={onDone} onBack={onBack} />;
 }
 
 function TabHome() {
-  const [screen, setScreen] = useState<'home' | 'check' | 'result' | 'draws'>('home');
+  type TabHomeScreen = 'home' | 'check' | 'result' | 'draws';
+  const readLastScreen = (): TabHomeScreen => {
+    const g = globalThis as unknown as { __LP_lastTabHomeScreen?: TabHomeScreen };
+    return g.__LP_lastTabHomeScreen ?? 'home';
+  };
+  const writeLastScreen = (s: TabHomeScreen) => {
+    const g = globalThis as unknown as { __LP_lastTabHomeScreen?: TabHomeScreen };
+    g.__LP_lastTabHomeScreen = s;
+  };
+
+  const [screen, _setScreen] = useState<TabHomeScreen>(readLastScreen());
+  const setScreen = useCallback((s: TabHomeScreen) => {
+    writeLastScreen(s);
+    _setScreen(s);
+  }, []);
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
-  const [editRecordId, setEditRecordId] = useState<string | null>(null);
+  const [checkResetNonce, setCheckResetNonce] = useState(0);
   const [selectedLottery, setSelectedLottery] = useState<LotteryId>('lotto_max');
-  const { jurisdiction, jurisdictionCode, loading: jurisdictionLoading } = useJurisdiction();
+  const { jurisdiction, jurisdictionCode } = useJurisdiction();
 
   useEffect(() => {
     let cancelled = false;
@@ -80,52 +119,11 @@ function TabHome() {
       cancelled = true;
     };
   }, []);
-  const [checkTourStep, setCheckTourStep] = useState<CheckTourStepIndex | null>(null);
-  const [checkTourLoaded, setCheckTourLoaded] = useState(false);
-  const [checkTourDonePersisted, setCheckTourDonePersisted] = useState(false);
-  const [checkTourHighlightRect, setCheckTourHighlightRect] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
 
-  useEffect(() => {
-    getCheckTourCompleted().then((done) => {
-      setCheckTourDonePersisted(done);
-      setCheckTourLoaded(true);
-    });
+  const handleLotteryChange = useCallback((id: LotteryId) => {
+    setSelectedLottery(id);
+    void setLastHomeLottery(id);
   }, []);
-
-  useEffect(() => {
-    if (!checkTourLoaded || checkTourDonePersisted || screen !== 'home' || jurisdictionLoading) return;
-    if (checkTourStep !== null) return;
-    let cancelled = false;
-    (async () => {
-      const ok = await canStartCheckTour();
-      if (cancelled || !ok) return;
-      setCheckTourStep(0);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [checkTourLoaded, checkTourDonePersisted, screen, jurisdictionLoading, checkTourStep]);
-
-  const finishCheckTour = useCallback(async () => {
-    await setCheckTourCompleted();
-    setCheckTourDonePersisted(true);
-    setCheckTourStep(null);
-    setCheckTourHighlightRect(null);
-  }, []);
-
-  const handleLotteryChange = useCallback(
-    (id: LotteryId) => {
-      setSelectedLottery(id);
-      void setLastHomeLottery(id);
-      if (checkTourStep === 0) setCheckTourStep(1);
-    },
-    [checkTourStep],
-  );
 
   const handleCheckScreenLotteryChange = useCallback((id: LotteryId) => {
     setSelectedLottery(id);
@@ -134,53 +132,45 @@ function TabHome() {
 
   const handleCheckTicket = useCallback(() => {
     setScreen('check');
-    if (checkTourStep === 1) setCheckTourStep(2);
-  }, [checkTourStep]);
-
-  const checkTourNextFromStep0 = useCallback(() => {
-    setCheckTourStep(1);
   }, []);
 
-  const showCheckTourOverlay =
-    checkTourStep !== null && (screen === 'home' || screen === 'check');
-
   let main: React.ReactNode;
-  if (screen === 'check') {
+  if (screen === 'check' || screen === 'result') {
     main = (
-      <CheckTicketScreen
-        preselectedLottery={selectedLottery}
-        onLotteryChange={handleCheckScreenLotteryChange}
-        jurisdiction={jurisdiction}
-        jurisdictionCode={jurisdictionCode}
-        initialRecordId={editRecordId}
-        checkTourStep={checkTourStep === 2 ? 2 : undefined}
-        onCheckTourHighlight={setCheckTourHighlightRect}
-        onBack={() => {
-          setEditRecordId(null);
-          setScreen('home');
-        }}
-        onResult={(id) => {
-          if (checkTourStep === 2) void finishCheckTour();
-          setResultRecordId(id);
-          setEditRecordId(null);
-          setScreen('result');
-        }}
-      />
-    );
-  } else if (screen === 'result' && resultRecordId) {
-    main = (
-      <ResultScreenAsync
-        recordId={resultRecordId}
-        onDone={() => {
-          setResultRecordId(null);
-          setEditRecordId(null);
-          setScreen('home');
-        }}
-        onEditNumbers={() => {
-          setEditRecordId(resultRecordId);
-          setScreen('check');
-        }}
-      />
+      <View style={{ flex: 1 }}>
+        <View style={{ flex: 1 }} pointerEvents={screen === 'result' ? 'none' : 'auto'}>
+          <CheckTicketScreen
+            preselectedLottery={selectedLottery}
+            onLotteryChange={handleCheckScreenLotteryChange}
+            jurisdiction={jurisdiction}
+            jurisdictionCode={jurisdictionCode}
+            resetNonce={checkResetNonce}
+            onBack={() => {
+              setScreen('home');
+            }}
+            onResult={(id) => {
+              setResultRecordId(id);
+              setScreen('result');
+            }}
+          />
+        </View>
+        {screen === 'result' && resultRecordId ? (
+          <View style={[StyleSheet.absoluteFillObject, { backgroundColor: COLORS.bg }]} pointerEvents="auto">
+            <ResultScreenAsync
+              recordId={resultRecordId}
+              onDone={() => {
+                setResultRecordId(null);
+                setCheckResetNonce((n) => n + 1);
+                setScreen('check');
+              }}
+              onBack={() => {
+                setResultRecordId(null);
+                setScreen('check');
+              }}
+            />
+          </View>
+        ) : null}
+      </View>
     );
   } else if (screen === 'draws') {
     main = <DrawsListScreen lotteryId={selectedLottery} onBack={() => setScreen('home')} />;
@@ -191,8 +181,6 @@ function TabHome() {
         onLotteryChange={handleLotteryChange}
         onCheckTicket={handleCheckTicket}
         onViewDrawHistory={() => setScreen('draws')}
-        checkTourStep={checkTourStep === 0 || checkTourStep === 1 ? checkTourStep : undefined}
-        onCheckTourHighlight={setCheckTourHighlightRect}
       />
     );
   }
@@ -200,27 +188,42 @@ function TabHome() {
   return (
     <View style={{ flex: 1 }}>
       {main}
-      {showCheckTourOverlay ? (
-        <CheckTourOverlay
-          step={checkTourStep!}
-          highlightRect={checkTourHighlightRect}
-          onSkip={finishCheckTour}
-          onNext={
-            checkTourStep === 0
-              ? checkTourNextFromStep0
-              : checkTourStep === 1
-                ? handleCheckTicket
-                : undefined
-          }
-          onDone={checkTourStep === 2 ? finishCheckTour : undefined}
-        />
-      ) : null}
     </View>
   );
 }
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
+  const [compassBounceNonce, setCompassBounceNonce] = useState(0);
+  const [strategyBounceNonce, setStrategyBounceNonce] = useState(0);
+  const activeTab = useNavigationState((s) => s.routes?.[s.index ?? 0]?.name);
+
+  useEffect(() => {
+    let cancelled = false;
+    let toggle = true;
+    const tick = () => {
+      if (cancelled) return;
+      if (activeTab === 'Compass') {
+        setStrategyBounceNonce((n) => n + 1);
+        return;
+      }
+      if (activeTab === 'StrategyLab') {
+        setCompassBounceNonce((n) => n + 1);
+        return;
+      }
+      // Home/Settings/etc: alternate between Compass and Strategy Lab
+      if (toggle) setCompassBounceNonce((n) => n + 1);
+      else setStrategyBounceNonce((n) => n + 1);
+      toggle = !toggle;
+    };
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [activeTab]);
+
   return (
     <Tab.Navigator
       screenOptions={{
@@ -251,7 +254,9 @@ function MainTabs() {
         component={CompassScreen}
         options={{
           tabBarLabel: 'Compass',
-          tabBarIcon: ({ color, size }) => <Ionicons name="compass" size={size} color={color} />,
+          tabBarIcon: ({ color, size, focused }) => (
+            <BouncyTabIcon name="compass" size={size} color={color} bounceNonce={compassBounceNonce} focused={focused} />
+          ),
         }}
       />
       <Tab.Screen
@@ -259,7 +264,9 @@ function MainTabs() {
         component={StrategyLabScreen}
         options={{
           tabBarLabel: 'Strategy Lab',
-          tabBarIcon: ({ color, size }) => <Ionicons name="flask" size={size} color={color} />,
+          tabBarIcon: ({ color, size, focused }) => (
+            <BouncyTabIcon name="flask" size={size} color={color} bounceNonce={strategyBounceNonce} focused={focused} />
+          ),
         }}
       />
       <Tab.Screen
@@ -294,6 +301,12 @@ function AppContent() {
     const sub = Linking.addEventListener('url', ({ url }) => handleDeepLink(url));
     Linking.getInitialURL().then(handleDeepLink);
     return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    void recordAppOpen();
+    void maybeRequestPlayReview();
   }, []);
 
   useEffect(() => {
@@ -393,7 +406,7 @@ function AppContent() {
 
   return (
     <>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.bg} />
       <NavigationContainer ref={navigationRef}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="MainTabs" component={MainTabs} />
@@ -418,6 +431,7 @@ function AppContent() {
               <PickBookScreen onBack={() => navigation.goBack()} />
             )}
           </Stack.Screen>
+          <Stack.Screen name="PickEvaluation" component={PickEvaluationScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </>

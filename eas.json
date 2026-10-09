@@ -6,7 +6,10 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "ELECTRON_SKIP_BINARY_DOWNLOAD": "1"
+      }
     },
     "preview": {
       "distribution": "internal",
@@ -16,6 +19,8 @@
         "buildType": "app-bundle"
       },
       "env": {
+        "NODE_ENV": "production",
+        "ELECTRON_SKIP_BINARY_DOWNLOAD": "1",
         "EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC": "1"
       }
     },
@@ -27,6 +32,7 @@
       },
       "env": {
         "NODE_ENV": "production",
+        "ELECTRON_SKIP_BINARY_DOWNLOAD": "1",
         "EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC": "1"
       }
     }

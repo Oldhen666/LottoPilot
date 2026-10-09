@@ -22,6 +22,9 @@ export interface AddOnInputSchema {
   multipleGroups?: boolean;
   userCheckbox?: boolean;
   tagDrawDateOptional?: boolean;
+  /** e.g. B.C. EXTRA: [2,2,2,2] for xx-xx-xx-xx display */
+  displayGroups?: number[];
+  groupSeparator?: string;
 }
 
 export interface AddOnCatalogItem {

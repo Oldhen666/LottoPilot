@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,8 +11,10 @@ import {
   Image,
   Platform,
   BackHandler,
+  ToastAndroid,
   Modal,
   Dimensions,
+  Share,
   RefreshControl,
   InteractionManager,
 } from 'react-native';
@@ -21,21 +23,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
 import * as ImagePicker from 'expo-image-picker';
 import { useDraws, invalidateDrawsCache } from '../hooks/useDraws';
-import { fetchDrawByDate } from '../services/supabase';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { fetchDrawByDate, resolveDrawExtraNumber } from '../services/supabase';
+import { maybeRequestPlayReview, recordCompletedScan } from '../services/playReview';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { PRIZE_EXPLANATIONS } from '../constants/prizeExplanations';
 import { checkTicket } from '../utils/check';
 import { insertRecord, getRecordById } from '../db/sqlite';
 import { computePrize } from '../engine/prizeEngine';
 import { computeAddOnResults } from '../engine/addOnEngine';
 import { fetchAddOnCatalog, isUserSelectableAddOn } from '../services/addOnCatalog';
-import { parseTicketFromImage, type TicketScanDiagnosticBundleInfo } from '../services/ocr';
-import { isPowerballScanDiagnosticEnabled } from '../config/scanDiagnostic';
-import {
-  openChatGptForDiagnosticUpload,
-  saveScanDiagnosticFolderToChosenDirectory,
-  shareScanDiagnosticFolderAsZip,
-} from '../services/powerballOcr/scanDiagnosticZip';
+import { parseTicketFromImage } from '../services/ocr';
 import { deleteDebugVariantUris } from '../services/ticketPreprocess/debugCopy';
 import { parseTicketDateFromImage } from '../services/parseTicketDateFromImage';
 import { normalizeDateCandidates } from '../date/normalizeDate';
@@ -47,7 +44,64 @@ import type { LotteryId } from '../types/lottery';
 import type { CurrentJurisdiction } from '../types/jurisdiction';
 import type { AddOnCatalogItem, AddOnsSelected, AddOnsInputs } from '../types/addOn';
 
-const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+/** Shown as one optional "Extra" row in Check UI; state keys stay EXTRA / ENCORE / TAG for OCR & DB. */
+const INDEPENDENT_ADD_ON_CODES = ['EXTRA', 'ENCORE', 'TAG'] as const;
+type IndependentAddOnCode = (typeof INDEPENDENT_ADD_ON_CODES)[number];
+
+function isIndependentAddOnCode(code: string): code is IndependentAddOnCode {
+  return (INDEPENDENT_ADD_ON_CODES as readonly string[]).includes(code);
+}
+
+const EXTRA_ADDON_UI_LABEL = 'EXTRA';
+/**
+ * Debug UI gate (thumbnails + rawText).
+ * Default OFF even in dev; enable manually by setting `globalThis.test_dev = true` and reloading.
+ */
+const SHOW_OCR_DEBUG_UI =
+  __DEV__ && !!(globalThis as unknown as { test_dev?: boolean; __LP_test_dev?: boolean }).test_dev;
+
+function inferIndependentAddOnCode(lotteryId: LotteryId, jurisdictionCode: string): IndependentAddOnCode | null {
+  if (lotteryId !== 'lotto_max' && lotteryId !== 'lotto_649') return null;
+  const jc = String(jurisdictionCode ?? '');
+  // Ontario: Encore (7 digits)
+  if (jc.startsWith('CA-ON')) return 'ENCORE';
+  // Atlantic: TAG (6 digits) nightly companion
+  if (jc.startsWith('CA-NB') || jc.startsWith('CA-NS') || jc.startsWith('CA-PE') || jc.startsWith('CA-NL')) return 'TAG';
+  // Default: EXTRA (WCLC/QC/BC etc.)
+  return 'EXTRA';
+}
+
+function schemaForOrphanIndependentAddOn(
+  code: IndependentAddOnCode,
+  jurisdictionCode: string
+): { digits: number; displayGroups?: number[]; groupSeparator?: string } {
+  if (code === 'TAG') return { digits: 6 };
+  if (code === 'ENCORE') return { digits: 7 };
+  if (code === 'EXTRA' && jurisdictionCode.startsWith('CA-BC'))
+    return { digits: 8, displayGroups: [2, 2, 2, 2], groupSeparator: '-' };
+  return { digits: 7 };
+}
+
+const LOTTERY_IDS: readonly LotteryId[] = SUPPORTED_LOTTERY_IDS;
+const MIN_FLEX_LINES = 3;
+const MAX_UI_LINES = 10;
+const MAX_OCR_PLAYS_PB_MM = MAX_UI_LINES;
+
+/** Default play lines on Check Ticket (official quick-pick caps: LM often 3, BC bundles 4; 6/49 standard 3). */
+function defaultUiLinesForLottery(lotteryId: LotteryId): number {
+  if (lotteryId === 'lotto_max') return 4;
+  if (lotteryId === 'lotto_649') return 3;
+  return MIN_FLEX_LINES;
+}
+
+function supportsFlexibleLines(lotteryId: LotteryId): boolean {
+  return (
+    lotteryId === 'powerball' ||
+    lotteryId === 'mega_millions' ||
+    lotteryId === 'lotto_max' ||
+    lotteryId === 'lotto_649'
+  );
+}
 
 /** Check UI: hide multipliers (prize-only); does not affect match logic */
 const HIDDEN_ADD_ON_CODES = new Set<string>(['POWER_PLAY', 'DOUBLE_PLAY', 'MEGA_MULTIPLIER']);
@@ -58,11 +112,10 @@ interface Props {
   jurisdiction?: CurrentJurisdiction | null;
   jurisdictionCode?: string | null;
   initialRecordId?: string | null;
+  /** Increment to force-reset scan/OCR UI state (used after exiting Result screen). */
+  resetNonce?: number;
   onBack: () => void;
   onResult: (recordId: string) => void;
-  /** First-run coach mark: highlight scan / upload row */
-  checkTourStep?: 2;
-  onCheckTourHighlight?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 }
 
 function parseNumbers(str: string, max: number, minVal?: number, maxVal?: number): number[] {
@@ -87,10 +140,9 @@ export default function CheckTicketScreen({
   jurisdiction,
   jurisdictionCode,
   initialRecordId,
+  resetNonce,
   onBack,
   onResult,
-  checkTourStep,
-  onCheckTourHighlight,
 }: Props) {
   const { plan } = useEntitlements();
   const [lotteryId, setLotteryId] = useState<LotteryId>(preselectedLottery);
@@ -99,17 +151,23 @@ export default function CheckTicketScreen({
   /** Powerball / Mega Millions: one Powerball or Mega Ball per play line (matches physical tickets). */
   const [specialByLine, setSpecialByLine] = useState<string[]>([]);
   const [allSets, setAllSets] = useState<number[][]>([]);
+  /** UI: how many lines to show (default 3, user can add up to 10). */
+  const [uiLines, setUiLines] = useState<number>(() => defaultUiLinesForLottery(preselectedLottery));
+  /** OCR may detect >10 lines; we cap at 10 and show a hint. */
+  const [ocrExtraLinesCount, setOcrExtraLinesCount] = useState<number>(0);
   const [selectedDraw, setSelectedDraw] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] } | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [ocrDateDetected, setOcrDateDetected] = useState(false);
   const [dateStatusMsg, setDateStatusMsg] = useState<string | null>(null);
   const [dateConfirmModal, setDateConfirmModal] = useState<{ candidates: string[]; rawText: string } | null>(null);
+  const [ocrBestVariant, setOcrBestVariant] = useState<{ label: string; uri: string; score: number } | null>(null);
   const [extraDraws, setExtraDraws] = useState<{ draw_date: string; winning_numbers: number[]; special_numbers?: number[] }[]>([]);
   const [addOnCatalog, setAddOnCatalog] = useState<AddOnCatalogItem[]>([]);
   const [addOnsSelected, setAddOnsSelected] = useState<AddOnsSelected>({});
   const [addOnsInputs, setAddOnsInputs] = useState<AddOnsInputs>({});
   const [showPrizeModal, setShowPrizeModal] = useState(false);
   const [ocrRawText, setOcrRawText] = useState<string | null>(null);
+  const [ocrAddOnsDebug, setOcrAddOnsDebug] = useState<string | null>(null);
   const [showOcrLog, setShowOcrLog] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -117,14 +175,19 @@ export default function CheckTicketScreen({
   const [ocrReading, setOcrReading] = useState(false);
   /** __DEV__ only: copied preprocess variant URIs for debugging (remove UI when done). */
   const [devPreprocessDebug, setDevPreprocessDebug] = useState<{ uris: string[]; labels: string[] } | null>(null);
-  /** Powerball scan diagnostic bundle path + summary (remove block with banner ad section when done). */
-  const [scanDiagnostic, setScanDiagnostic] = useState<TicketScanDiagnosticBundleInfo | null>(null);
-  const [scanDiagOp, setScanDiagOp] = useState<null | 'share' | 'folder'>(null);
+  const [devPreViewer, setDevPreViewer] = useState<{ uri: string; label: string } | null>(null);
+  const handleCheckRef = useRef<() => Promise<void>>(async () => {});
   const { draws, loading } = useDraws(lotteryId, refetchTrigger);
+
+  // We do not require user to select a purchase region. Prefer GPS/known jurisdictionCode, else fall back.
+  const defaultJurisdictionCode =
+    lotteryId === 'powerball' || lotteryId === 'mega_millions' ? 'US-NATIONAL' : 'CA-NATIONAL';
+  const normalizedJurisdictionCode =
+    typeof jurisdictionCode === 'string' && jurisdictionCode.trim().length > 0 ? jurisdictionCode.trim() : null;
+  const effectiveJurisdictionCode = normalizedJurisdictionCode ?? defaultJurisdictionCode;
+  const prizeJurisdictionCode = normalizedJurisdictionCode ?? defaultJurisdictionCode;
+
   const def = LOTTERY_DEFS[lotteryId];
-  /** 开发包默认可用；release 需 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1（见 app.config extra） */
-  const showPbDiagnosticUi =
-    isPowerballScanDiagnosticEnabled() && lotteryId === 'powerball' && Platform.OS !== 'web';
   const rawDrawsList = [...draws, ...extraDraws.filter((e) => !draws.some((d) => d.draw_date === e.draw_date))];
   const drawsList = lotteryId === 'powerball'
     ? rawDrawsList.filter((d) => isValidDrawDate(d.draw_date, 'powerball'))
@@ -133,10 +196,24 @@ export default function CheckTicketScreen({
       : rawDrawsList;
   const drawScrollRef = useRef<ScrollView>(null);
   const checkScrollRef = useRef<ScrollView>(null);
-  const scanCoachRef = useRef<View>(null);
   /** Y offset of the numbers section within ScrollView content (for post-OCR scroll). */
   const numbersSectionYRef = useRef(0);
   const CHIP_WIDTH = 105;
+
+  const formatGroupedNumber = useCallback((raw: string, groups: number[], sep = '-') => {
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    let idx = 0;
+    const parts: string[] = [];
+    for (const g of groups) {
+      if (idx >= digits.length) break;
+      const chunk = digits.slice(idx, idx + Math.max(1, g));
+      if (!chunk) break;
+      parts.push(chunk);
+      idx += Math.max(1, g);
+    }
+    if (idx < digits.length) parts.push(digits.slice(idx));
+    return parts.join(sep);
+  }, []);
 
   const scrollToNumbersSection = useCallback(() => {
     InteractionManager.runAfterInteractions(() => {
@@ -149,60 +226,72 @@ export default function CheckTicketScreen({
     });
   }, []);
 
-  const reportScanCoachRect = useCallback(() => {
-    if (checkTourStep !== 2 || !onCheckTourHighlight) return;
-    InteractionManager.runAfterInteractions(() => {
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          scanCoachRef.current?.measureInWindow((x, y, w, h) => {
-            if (w > 0 && h > 0) onCheckTourHighlight({ x, y, width: w, height: h });
-          });
-        }, 120);
-      });
-    });
-  }, [checkTourStep, onCheckTourHighlight]);
-
-  useEffect(() => {
-    reportScanCoachRect();
-  }, [reportScanCoachRect, lotteryId]);
-
-  /** 诊断区在 ScrollView 最底部（广告下方），出现后滚到底避免被底栏挡住 */
-  useEffect(() => {
-    if (!showPbDiagnosticUi) return;
-    const task = InteractionManager.runAfterInteractions(() => {
-      setTimeout(() => {
-        checkScrollRef.current?.scrollToEnd({ animated: true });
-      }, 120);
-    });
-    return () => task.cancel?.();
-  }, [scanDiagnostic, showPbDiagnosticUi]);
-
   useEffect(() => {
     setLotteryId(preselectedLottery);
   }, [preselectedLottery]);
 
-  useEffect(() => {
-    if (initialRecordId) return;
+  const resetScanState = useCallback(() => {
+    // Clear current image + OCR readings.
+    setImageUri(null);
+    setOcrBestVariant(null);
+    setDevPreViewer(null);
+    setOcrReading(false);
+    setDevPreprocessDebug((prev) => {
+      if (prev?.uris?.length) {
+        deleteDebugVariantUris(prev.uris).catch(() => {});
+      }
+      return null;
+    });
     setSelectedDraw(null);
     setExtraDraws([]);
     setOcrDateDetected(false);
     setDateStatusMsg(null);
     setOcrRawText(null);
+    setOcrAddOnsDebug(null);
     setDateConfirmModal(null);
     setAddOnsSelected({});
     setAddOnsInputs({});
     setSpecialInput('');
+    setOcrExtraLinesCount(0);
     const def = LOTTERY_DEFS[lotteryId];
     const cnt = def?.main_count ?? 7;
-    const plays = def?.plays_per_ticket ?? 1;
+    const plays = defaultUiLinesForLottery(lotteryId);
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
+    setUiLines(plays);
     if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
       setSpecialByLine(Array.from({ length: plays }, () => ''));
     } else {
       setSpecialByLine([]);
     }
+  }, [lotteryId]);
+
+  useEffect(() => {
+    if (initialRecordId) return;
+    resetScanState();
   }, [lotteryId, initialRecordId]);
+
+  useEffect(() => {
+    if (!resetNonce) return;
+    if (initialRecordId) return;
+    resetScanState();
+  }, [resetNonce, initialRecordId, resetScanState]);
+
+  useLayoutEffect(() => {
+    if (!resetNonce) return;
+    if (initialRecordId) return;
+    checkScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [resetNonce, initialRecordId]);
+
+  // Keep PB/MM specialByLine aligned with current UI line count.
+  useEffect(() => {
+    if (lotteryId !== 'powerball' && lotteryId !== 'mega_millions') return;
+    setSpecialByLine((prev) => {
+      const next = [...prev];
+      while (next.length < uiLines) next.push('');
+      return next;
+    });
+  }, [lotteryId, uiLines]);
 
   /** Clear OCR-filled numbers and add-ons when user removes the preview image. */
   const clearScannedReadings = useCallback(() => {
@@ -212,12 +301,13 @@ export default function CheckTicketScreen({
       }
       return null;
     });
-    setScanDiagnostic(null);
     const d = LOTTERY_DEFS[lotteryId];
     const cnt = d?.main_count ?? 7;
-    const plays = d?.plays_per_ticket ?? 1;
+    const plays = defaultUiLinesForLottery(lotteryId);
     const emptySets = Array.from({ length: plays }, () => Array(cnt).fill(0) as number[]);
     setAllSets(emptySets);
+    setUiLines(plays);
+    setOcrExtraLinesCount(0);
     setSpecialInput('');
     if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
       setSpecialByLine(Array.from({ length: plays }, () => ''));
@@ -226,12 +316,13 @@ export default function CheckTicketScreen({
     }
     setAddOnsSelected({});
     setAddOnsInputs({});
+    setOcrRawText(null);
+    setShowOcrLog(false);
   }, [lotteryId]);
 
   useEffect(() => {
-    const jCode = jurisdictionCode ?? 'CA-ON';
-    fetchAddOnCatalog(lotteryId, jCode).then(setAddOnCatalog);
-  }, [lotteryId, jurisdictionCode]);
+    fetchAddOnCatalog(lotteryId, effectiveJurisdictionCode).then(setAddOnCatalog);
+  }, [lotteryId, effectiveJurisdictionCode]);
 
   useEffect(() => {
     if (!initialRecordId) return;
@@ -294,10 +385,28 @@ export default function CheckTicketScreen({
     }
   }, [draws, extraDraws, initialRecordId, selectedDraw]);
 
+  const scanInFlightRef = useRef(false);
+  const swallowBackUntilRef = useRef(0);
+  const lastBackPressAtRef = useRef(0);
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      onBack();
+      // Some native screens (e.g. document scanner) may trigger a back event when closing.
+      // If we are in the middle of an external scan/processing, swallow it to avoid
+      // unexpectedly popping back to Home.
+      const now = Date.now();
+      if (scanInFlightRef.current) return true;
+      if (swallowBackUntilRef.current && now < swallowBackUntilRef.current) return true;
+      // Prevent accidental back fired by native scanner close. Require double-press to exit this screen.
+      const DOUBLE_PRESS_MS = 1200;
+      if (now - lastBackPressAtRef.current < DOUBLE_PRESS_MS) {
+        lastBackPressAtRef.current = 0;
+        onBack();
+        return true;
+      }
+      lastBackPressAtRef.current = now;
+      ToastAndroid.show('Press back again to return home', ToastAndroid.SHORT);
       return true;
     });
     return () => sub.remove();
@@ -440,12 +549,11 @@ export default function CheckTicketScreen({
         jackpot_amount: sel.jackpot_amount,
         multiplier_value: lotteryId === 'powerball' ? sel.power_play_multiplier : lotteryId === 'mega_millions' ? sel.mega_multiplier : sel.multiplier_value,
       };
-      const jCode = jurisdictionCode ?? 'NATIONAL';
       const prizeResults = await Promise.all(
         mainPlays.map((play, i) =>
           computePrize(
             lotteryId,
-            jCode,
+            prizeJurisdictionCode,
             drawWithPrize,
             play,
             userSpecialPerLine[i]?.length ? userSpecialPerLine[i] : undefined,
@@ -480,7 +588,10 @@ export default function CheckTicketScreen({
           const f = full as Record<string, unknown>;
           drawForAddOns = {
             ...drawForAddOns,
-            extra_number: (f.extra_number as string | undefined) ?? drawForAddOns.extra_number,
+            extra_number:
+              resolveDrawExtraNumber(f, effectiveJurisdictionCode) ??
+              (f.extra_number as string | undefined) ??
+              drawForAddOns.extra_number,
             encore_number: (f.encore_number as string | undefined) ?? drawForAddOns.encore_number,
             maxmillions_numbers_json:
               (f.maxmillions_numbers_json as string[] | undefined) ?? drawForAddOns.maxmillions_numbers_json,
@@ -523,7 +634,7 @@ export default function CheckTicketScreen({
         match_count_special: result.match_count_special,
         result_bucket: result.result_bucket,
         source: imageUri ? 'photo' : 'manual',
-        jurisdiction_code: jurisdictionCode ?? undefined,
+        jurisdiction_code: prizeJurisdictionCode,
         add_ons_selected_json: hasAddOns ? addOnsSelected : undefined,
         add_ons_inputs_json: hasAddOnInputs ? addOnsToSave : undefined,
         result_json: {
@@ -554,22 +665,73 @@ export default function CheckTicketScreen({
     }
   };
 
-  const processImageUri = async (uri: string) => {
-    setOcrReading(true);
+  handleCheckRef.current = handleCheck;
+
+  const runDocumentScan = async () => {
+    if (Platform.OS === 'web') return;
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Camera access is needed to scan tickets.');
+      return;
+    }
     try {
+      scanInFlightRef.current = true;
+      swallowBackUntilRef.current = 0;
+      const DocumentScanner = require('react-native-document-scanner-plugin').default;
+      const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
+        maxNumDocuments: 1,
+        croppedImageQuality: 95,
+      });
+      if (scanStatus === 'cancel' || !scannedImages?.length) return;
+      const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
+      await processImageUri(uri, { fromDocumentScan: true });
+    } catch (e) {
+      Alert.alert('Scan failed', (e as Error)?.message || 'Document scanner is not available.');
+    } finally {
+      scanInFlightRef.current = false;
+      // Some devices dispatch the back event *after* the scanner closes (or after returning to app).
+      // Swallow for a short window so "Next" doesn't accidentally pop to Home.
+      swallowBackUntilRef.current = Date.now() + 2000;
+    }
+  };
+
+  const runPickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Photo library access is needed to select ticket images.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: false,
+      quality: 0.92,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    await processImageUri(result.assets[0].uri);
+  };
+
+  const processImageUri = async (uri: string, sourceOpts?: { fromDocumentScan?: boolean }) => {
+    setOcrReading(true);
+    let scanCompleted = false;
+    try {
+      scanCompleted = true;
       setImageUri(uri);
 
       const def = LOTTERY_DEFS[lotteryId];
-    const jCode = jurisdictionCode ?? 'CA-ON';
-    const parsed = await parseTicketFromImage(uri, def ? {
+    const playsPerTicketForOcr =
+      lotteryId === 'powerball' || lotteryId === 'mega_millions'
+        ? Math.max(def?.plays_per_ticket ?? 1, MAX_OCR_PLAYS_PB_MM)
+        : (def?.plays_per_ticket ?? 1);
+    const parsePromise = parseTicketFromImage(uri, def ? {
       mainCount: def.main_count,
       mainMax: def.main_max,
       specialMin: def.special_min ?? 1,
       specialMax: def.special_max ?? 49,
       specialCount: def.special_count ?? 1,
       lotteryId,
-      jurisdictionCode: jCode,
-      playsPerTicket: def.plays_per_ticket,
+      jurisdictionCode: effectiveJurisdictionCode,
+      playsPerTicket: playsPerTicketForOcr,
+      imageSource: sourceOpts?.fromDocumentScan ? 'document_scan' : 'default',
       ...(__DEV__
         ? {
             debugPreprocessPreview: (info: { uris: string[]; labels: string[] }) => {
@@ -582,22 +744,71 @@ export default function CheckTicketScreen({
             },
           }
         : {}),
-      ...(showPbDiagnosticUi
-        ? {
-            diagnosticBundle: true,
-            onDiagnosticBundle: (info: TicketScanDiagnosticBundleInfo) => {
-              setScanDiagnostic(info);
-            },
-          }
-        : {}),
     } : undefined);
-    if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
-      if (parsed.allSets?.length) {
-        setAllSets(parsed.allSets);
-      } else {
-        setAllSets([parsed!.mainNumbers]);
+    const parsed = await Promise.race([
+      parsePromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 55_000)),
+    ]);
+
+    setOcrRawText(parsed?.rawText ?? null);
+    if (__DEV__ && !parsed?.rawText?.trim()) {
+      console.warn('[CheckTicket] ML Kit returned no text', { lotteryId, uri: uri.slice(0, 80) });
+      try {
+        const { diagnoseOcrUri } = await import('../services/powerballOcr/mlkitRecognize');
+        const diag = await diagnoseOcrUri(uri);
+        console.warn('[CheckTicket] OCR diagnostic', JSON.stringify(diag));
+      } catch (e) {
+        console.warn('[CheckTicket] OCR diagnostic failed', e);
       }
-      const plays = def?.plays_per_ticket ?? 1;
+    }
+    if (__DEV__) setOcrAddOnsDebug(parsed?.addOnsDetected ? JSON.stringify(parsed.addOnsDetected) : 'null');
+    setOcrBestVariant(__DEV__ ? (parsed as any)?.debugOcrVariant ?? null : null);
+    if (__DEV__ && parsed?.rawText) {
+      console.log('--- CheckTicket OCR rawText ---\n', parsed.rawText, '\n--- end rawText ---');
+    }
+    if (__DEV__) {
+      console.log(
+        '[CheckTicket] addOnsDetected=',
+        parsed?.addOnsDetected ?? null,
+        'jurisdiction=',
+        effectiveJurisdictionCode,
+        'lotteryId=',
+        lotteryId
+      );
+    }
+    if (__DEV__ && parsed?.allSets?.length) {
+      console.log('[CheckTicket] parsed allSets=%d specialsPerLine=%d', parsed.allSets.length, parsed.specialsPerLine?.length ?? 0);
+    }
+
+    if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
+      setOcrExtraLinesCount(0);
+      if (parsed.allSets?.length) {
+        const cnt = def?.main_count ?? 7;
+        const detected = parsed.allSets.length;
+        const targetLines = Math.min(
+          MAX_UI_LINES,
+          Math.max(defaultUiLinesForLottery(lotteryId), MIN_FLEX_LINES, detected),
+        );
+        if (detected > targetLines) setOcrExtraLinesCount(detected - targetLines);
+        setUiLines(targetLines);
+        const padded = parsed.allSets
+          .slice(0, targetLines)
+          .map((s) => [...s, ...Array(Math.max(0, cnt - s.length)).fill(0)].slice(0, cnt));
+        while (padded.length < targetLines) padded.push(Array(cnt).fill(0));
+        setAllSets(padded);
+      } else {
+        const cnt = def?.main_count ?? 7;
+        const one = [...parsed!.mainNumbers, ...Array(Math.max(0, cnt - parsed!.mainNumbers.length)).fill(0)].slice(0, cnt);
+        const padded = [one];
+        const minLines = defaultUiLinesForLottery(lotteryId);
+        while (padded.length < minLines) padded.push(Array(cnt).fill(0));
+        setUiLines(minLines);
+        setAllSets(padded);
+      }
+      const plays = Math.min(
+        MAX_UI_LINES,
+        Math.max(defaultUiLinesForLottery(lotteryId), MIN_FLEX_LINES, uiLines, parsed.allSets?.length ?? 0),
+      );
       if (
         parsed.specialsPerLine?.length &&
         (lotteryId === 'powerball' || lotteryId === 'mega_millions')
@@ -619,15 +830,16 @@ export default function CheckTicketScreen({
         setSpecialByLine(Array.from({ length: plays }, () => ''));
       }
       if (parsed.addOnsDetected) {
-        const catalog = addOnCatalog.length > 0 ? addOnCatalog : await fetchAddOnCatalog(lotteryId, jCode);
+        const catalog = addOnCatalog.length > 0 ? addOnCatalog : await fetchAddOnCatalog(lotteryId, effectiveJurisdictionCode);
         const selectable = catalog.filter(isUserSelectableAddOn).map((i) => i.add_on_code);
         const newSelected: AddOnsSelected = {};
         const newInputs: AddOnsInputs = {};
         for (const code of selectable) {
           if (HIDDEN_ADD_ON_CODES.has(code)) continue;
-          if (parsed.addOnsDetected!.selected[code]) {
+          const val = parsed.addOnsDetected!.inputs[code];
+          const isSel = !!parsed.addOnsDetected!.selected[code] || (val != null && String(val).length > 0);
+          if (isSel) {
             newSelected[code as keyof AddOnsSelected] = true;
-            const val = parsed.addOnsDetected!.inputs[code];
             if (val != null) newInputs[code as keyof AddOnsInputs] = val;
           }
         }
@@ -641,6 +853,10 @@ export default function CheckTicketScreen({
           if (det.selected.ENCORE && det.inputs.ENCORE) {
             newSelected.ENCORE = true;
             newInputs.ENCORE = det.inputs.ENCORE;
+          }
+          if (det.selected.TAG && det.inputs.TAG) {
+            newSelected.TAG = true;
+            newInputs.TAG = det.inputs.TAG;
           }
         }
         if (Object.keys(newSelected).length > 0) {
@@ -681,10 +897,7 @@ export default function CheckTicketScreen({
     };
 
     if (parsed?.rawText) {
-      let dateResult = normalizeDateCandidates(parsed.rawText, lotteryId);
-      if (dateResult.candidates.length === 0) {
-        dateResult = await parseTicketDateFromImage(uri, lotteryId);
-      }
+      const dateResult = normalizeDateCandidates(parsed.rawText, lotteryId);
       if (dateResult.candidates.length > 0) {
         setOcrDateDetected(true);
         if (dateResult.needsUserConfirm || !dateResult.dateISO) {
@@ -697,6 +910,13 @@ export default function CheckTicketScreen({
       } else {
         setOcrDateDetected(false);
         setDateStatusMsg('No date detected from ticket. Please select draw date manually.');
+      }
+      if (!parsed.mainNumbers?.length && !parsed.allSets?.length) {
+        setDateStatusMsg(
+          lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
+            ? 'OCR read text but could not find play lines. Please enter numbers manually.'
+            : 'OCR read text but could not find play numbers. Please enter numbers manually.',
+        );
       }
     } else {
       if (!parsed && uri) {
@@ -713,50 +933,37 @@ export default function CheckTicketScreen({
         }
       }
       setOcrDateDetected(false);
-      setDateStatusMsg(parsed ? 'No date detected from ticket. Please select draw date manually.' : 'OCR could not read text. Please enter numbers and select date manually.');
+      const failMsg = parsed
+        ? parsed.mainNumbers?.length || parsed.allSets?.length
+          ? 'No date detected from ticket. Please select draw date manually.'
+          : lotteryId === 'lotto_max' || lotteryId === 'lotto_649'
+            ? 'OCR read text but could not find play lines. Please enter numbers manually.'
+            : 'OCR read text but could not find play numbers. Please enter numbers manually.'
+        : 'OCR could not read text. Use Scan ticket with good lighting, or enter numbers manually.';
+      setDateStatusMsg(failMsg);
     }
 
       if (parsed?.mainNumbers?.length || parsed?.allSets?.length) {
         scrollToNumbersSection();
       }
+    } catch {
+      scanCompleted = false;
+      setDateStatusMsg('Scan processing failed or timed out. Please try again or enter numbers manually.');
     } finally {
       setOcrReading(false);
+      if (scanCompleted && sourceOpts?.fromDocumentScan) {
+        void recordCompletedScan().then(() => maybeRequestPlayReview());
+      }
     }
   };
 
   const scanDocument = async () => {
     if (Platform.OS === 'web') return;
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Camera access is needed to scan tickets.');
-      return;
-    }
-    try {
-      const DocumentScanner = require('react-native-document-scanner-plugin').default;
-      const { scannedImages, status: scanStatus } = await DocumentScanner.scanDocument({
-        maxNumDocuments: 1,
-      });
-      if (scanStatus === 'cancel' || !scannedImages?.length) return;
-      const uri = scannedImages[0].startsWith('file://') ? scannedImages[0] : `file://${scannedImages[0]}`;
-      await processImageUri(uri);
-    } catch (e) {
-      Alert.alert('Scan failed', (e as Error)?.message || 'Document scanner is not available.');
-    }
+    await runDocumentScan();
   };
 
   const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Photo library access is needed to select ticket images.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
-    });
-    if (result.canceled || !result.assets?.[0]) return;
-    await processImageUri(result.assets[0].uri);
+    await runPickImage();
   };
 
   const handleDateConfirm = async (dateISO: string) => {
@@ -792,39 +999,63 @@ export default function CheckTicketScreen({
 
   const insets = useSafeAreaInsets();
 
-  return (
-    <ScrollView
-      ref={checkScrollRef}
-      style={styles.container}
-      contentContainerStyle={[
-        styles.content,
-        {
-          paddingTop: insets.top + SPACING.screenPadding,
-          /** 底栏 Tab 会盖住 ScrollView 末尾；诊断区在广告下方，需额外留白才能滚到底看见 */
-          paddingBottom:
-            SPACING.screenPaddingBottom +
-            insets.bottom +
-            (showPbDiagnosticUi ? SPACING.tabBarHeight + 24 : 0),
-        },
-      ]}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          tintColor={COLORS.primary}
-        />
-      }
-      onLayout={() => reportScanCoachRect()}
-      onContentSizeChange={() => reportScanCoachRect()}
-      onScrollEndDrag={() => reportScanCoachRect()}
-      onMomentumScrollEnd={() => reportScanCoachRect()}
-    >
-      <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-        <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
-        <Text style={styles.backText}>Back</Text>
-      </TouchableOpacity>
+  const visibleAddOnItems = useMemo(
+    () => addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)),
+    [addOnCatalog]
+  );
 
-      <Text style={styles.title}>Check Ticket</Text>
+  const catalogOtherItems = useMemo(
+    () => visibleAddOnItems.filter((i) => !isIndependentAddOnCode(i.add_on_code)),
+    [visibleAddOnItems]
+  );
+
+  const independentCode = useMemo(() => {
+    if (lotteryId !== 'lotto_max' && lotteryId !== 'lotto_649') return null;
+    // If OCR/user already provided a specific add-on number, prefer showing that one
+    // (so NATIONAL still auto-fills ENCORE/TAG/EXTRA correctly).
+    if (addOnsSelected.ENCORE || addOnsInputs.ENCORE) return 'ENCORE' as const;
+    if (addOnsSelected.TAG || addOnsInputs.TAG) return 'TAG' as const;
+    if (addOnsSelected.EXTRA || addOnsInputs.EXTRA) return 'EXTRA' as const;
+    return inferIndependentAddOnCode(lotteryId, effectiveJurisdictionCode);
+  }, [lotteryId, effectiveJurisdictionCode, addOnsSelected, addOnsInputs]);
+
+  const independentCatalogItem = useMemo(() => {
+    if (!independentCode) return null;
+    return visibleAddOnItems.find((i) => i.add_on_code === independentCode) ?? null;
+  }, [visibleAddOnItems, independentCode]);
+
+  const showIndependentExtraBlock = lotteryId === 'lotto_max' || lotteryId === 'lotto_649';
+  const showOtherAddOnBlocks = catalogOtherItems.length > 0;
+
+  return (
+    <View style={styles.screenWrap}>
+      <View style={[styles.stickyHeader, { paddingTop: insets.top + SPACING.screenPadding }]}>
+        <View style={styles.content}>
+          <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+            <Ionicons name="arrow-back" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Check Ticket</Text>
+        </View>
+      </View>
+      <ScrollView
+        ref={checkScrollRef}
+        style={styles.container}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: SPACING.screenPadding,
+            paddingBottom: SPACING.screenPaddingBottom + insets.bottom,
+          },
+        ]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={COLORS.primary}
+          />
+        }
+      >
 
       <View style={styles.lotteryRow}>
         <Text style={styles.label}>Lottery</Text>
@@ -907,20 +1138,20 @@ export default function CheckTicketScreen({
           <View style={styles.readingCard}>
             <ActivityIndicator size="large" color={COLORS.gold} />
             <Text style={styles.readingTitle}>Reading ticket…</Text>
-            <Text style={styles.readingSubtitle}>Recognizing numbers and date</Text>
           </View>
         </View>
       </Modal>
 
       {jurisdiction && (
         <Text style={styles.jurisdictionHint}>
-          Prize rules: {jurisdiction.regionName || jurisdiction.regionCode}, {jurisdiction.country === 'CA' ? 'Canada' : 'USA'}
+          Your location (GPS/settings): {jurisdiction.regionName || jurisdiction.regionCode},{' '}
+          {jurisdiction.country === 'CA' ? 'Canada' : 'USA'}
         </Text>
       )}
 
       <Text style={styles.label}>Draw date{lotteryId === 'powerball' ? ' (Mon/Wed/Sat)' : lotteryId === 'mega_millions' ? ' (Tue/Fri)' : ''} · Pull down to refresh</Text>
       {loading ? (
-        <ActivityIndicator size="small" color="#6366f1" />
+        <ActivityIndicator size="small" color={COLORS.primary} />
       ) : (
         <ScrollView ref={drawScrollRef} horizontal showsHorizontalScrollIndicator={false} style={styles.drawScroll}>
           {drawsList.map((d) => (
@@ -932,19 +1163,14 @@ export default function CheckTicketScreen({
               ]}
               onPress={() => setSelectedDraw(d)}
             >
-              <Text style={styles.drawChipText}>{d.draw_date}</Text>
+              <Text style={[styles.drawChipText, selectedDraw?.draw_date === d.draw_date && styles.drawChipTextActive]}>{d.draw_date}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
       )}
 
-      <Text style={styles.label}>How to enter numbers</Text>
-      <View
-        ref={scanCoachRef}
-        collapsable={false}
-        style={styles.entryRow}
-        onLayout={() => reportScanCoachRect()}
-      >
+      {/* Removed: "How to enter numbers" helper title */}
+      <View style={styles.entryRow}>
         {Platform.OS !== 'web' ? (
           <TouchableOpacity style={styles.entryBtn} onPress={() => scanDocument()}>
             <Ionicons name="scan" size={22} color={COLORS.gold} style={styles.entryBtnIcon} />
@@ -957,8 +1183,18 @@ export default function CheckTicketScreen({
           </TouchableOpacity>
         )}
       </View>
-      {Platform.OS !== 'web' && (
-        <Text style={styles.scanHint}>Use "Scan ticket" for angled photos — it flattens the image for better date/number recognition.</Text>
+      {/* Removed: angled-photo hint (keep feature, hide text) */}
+      {(lotteryId === 'powerball' || lotteryId === 'mega_millions') && (
+        <Text style={styles.scanHint}>
+          Powerball / Mega Millions: OCR can auto-detect up to {MAX_UI_LINES} lines. If your ticket has more than {MAX_UI_LINES} lines, tap “+”
+          below to add lines and fill in the rest manually.
+          {'\n'}OCR is assistive only. If anything looks wrong, please correct it manually.
+        </Text>
+      )}
+      {(lotteryId === 'lotto_max' || lotteryId === 'lotto_649') && (
+        <Text style={styles.scanHint}>
+          Scan is assistive only. Please review your numbers and adjust manually if needed.
+        </Text>
       )}
 
       <BannerAdPlaceholder testId="scan" userPlan={plan} />
@@ -994,11 +1230,53 @@ export default function CheckTicketScreen({
                 : 'If numbers weren\'t detected, enter manually below. If draw date is wrong, select the correct date above.'}
             </Text>
           )}
-          {__DEV__ && Platform.OS !== 'web' && devPreprocessDebug && devPreprocessDebug.uris.length > 0 ? (
+          {SHOW_OCR_DEBUG_UI && Platform.OS !== 'web' && devPreprocessDebug && devPreprocessDebug.uris.length > 0 ? (
             <View style={styles.devPreBlock}>
-              <Text style={styles.devPreLabel}>
-                DEV: OCR 预处理变体（调试用，发布前删掉本段 UI）
-              </Text>
+              <Text style={styles.devPreLabel}>DEV: OCR preprocess variants (debug only)</Text>
+              <Modal
+                visible={!!devPreViewer}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setDevPreViewer(null)}
+              >
+                <View style={styles.devViewerOverlay}>
+                  <View style={styles.devViewerCard}>
+                    <View style={styles.devViewerHeader}>
+                      <Text style={styles.devViewerTitle} numberOfLines={1}>
+                        {devPreViewer?.label ?? 'preview'}
+                      </Text>
+                      <TouchableOpacity onPress={() => setDevPreViewer(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
+                    <View style={styles.devViewerImgWrap}>
+                      <Image source={{ uri: devPreViewer?.uri }} style={styles.devViewerImg} resizeMode="contain" />
+                    </View>
+                    <Text selectable style={styles.devViewerUri} numberOfLines={2}>
+                      {devPreViewer?.uri ?? ''}
+                    </Text>
+                    <View style={styles.devViewerActions}>
+                      <TouchableOpacity
+                        style={styles.devViewerBtn}
+                        onPress={async () => {
+                          if (!devPreViewer?.uri) return;
+                          try {
+                            await Share.share({ message: devPreViewer.uri, url: devPreViewer.uri });
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                      >
+                        <Ionicons name="share-outline" size={18} color={COLORS.text} />
+                        <Text style={styles.devViewerBtnText}>Share / Save</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.devViewerBtn, styles.devViewerBtnSecondary]} onPress={() => setDevPreViewer(null)}>
+                        <Text style={styles.devViewerBtnText}>Close</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator
@@ -1007,13 +1285,45 @@ export default function CheckTicketScreen({
               >
                 {devPreprocessDebug.uris.map((u, i) => (
                   <View key={`${u}-${i}`} style={styles.devPreItem}>
-                    <Image source={{ uri: u }} style={styles.devPreThumb} resizeMode="contain" />
+                    <TouchableOpacity
+                      onPress={() =>
+                        setDevPreViewer({
+                          uri: u,
+                          label: devPreprocessDebug.labels[i] ?? `v${i}`,
+                        })
+                      }
+                      activeOpacity={0.85}
+                    >
+                      <Image source={{ uri: u }} style={styles.devPreThumb} resizeMode="contain" />
+                    </TouchableOpacity>
                     <Text style={styles.devPreCap} numberOfLines={1}>
                       {devPreprocessDebug.labels[i] ?? `v${i}`}
                     </Text>
                   </View>
                 ))}
               </ScrollView>
+            </View>
+          ) : null}
+          {SHOW_OCR_DEBUG_UI && Platform.OS !== 'web' && ocrRawText ? (
+            <View style={styles.devOcrRawBlock}>
+              <TouchableOpacity
+                onPress={() => setShowOcrLog((v) => !v)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.devPreLabel}>
+                  DEV: OCR rawText (tap to expand/collapse; long-press to select & copy)
+                  {ocrBestVariant?.label ? `\nvariant: ${ocrBestVariant.label}` : ''}
+                  {ocrBestVariant?.uri ? `\nuri: ${ocrBestVariant.uri}` : ''}
+                  {ocrAddOnsDebug != null ? `\naddOnsDetected: ${ocrAddOnsDebug}` : ''}
+                </Text>
+              </TouchableOpacity>
+              {showOcrLog ? (
+                <ScrollView style={styles.devOcrRawScroll} nestedScrollEnabled>
+                  <Text selectable style={styles.devOcrRawText}>
+                    {ocrRawText}
+                  </Text>
+                </ScrollView>
+              ) : null}
             </View>
           ) : null}
         </View>
@@ -1026,12 +1336,18 @@ export default function CheckTicketScreen({
       >
         <Text style={styles.label}>
           {(lotteryId === 'powerball' || lotteryId === 'mega_millions') ? 'White balls ' : ''}{def.main_count} numbers ({def.main_min}-{def.main_max}, ascending, unique)
-          {(def?.plays_per_ticket ?? 1) > 1 ? ` · ${def?.plays_per_ticket ?? 1} lines` : ''}
+          {(uiLines ?? 1) > 1 ? ` · ${uiLines} lines` : ''}
           {(lotteryId === 'powerball' || lotteryId === 'mega_millions') &&
             ` · last box: ${lotteryId === 'powerball' ? 'Powerball' : 'Mega Ball'} (${def.special_min}–${def.special_max})`}
         </Text>
       </View>
-      {Array.from({ length: def?.plays_per_ticket ?? 1 }, (_, i) => i).map((lineIdx) => {
+      {ocrExtraLinesCount > 0 && (
+        <Text style={styles.hint}>
+          OCR detected {ocrExtraLinesCount} extra line(s) beyond the limit (truncated to {MAX_UI_LINES}). Tap “+” below to add lines and enter them
+          manually.
+        </Text>
+      )}
+      {Array.from({ length: uiLines }, (_, i) => i).map((lineIdx) => {
         const row = (allSets[lineIdx] ?? Array(def.main_count).fill(0)).slice(0, def.main_count);
         const values = row.map((n) => (n > 0 ? String(n) : ''));
         const paddedValues = values.length >= def.main_count ? values : [...values, ...Array(def.main_count - values.length).fill('')];
@@ -1055,8 +1371,11 @@ export default function CheckTicketScreen({
               });
               const result = [...padded, ...Array(Math.max(0, def.main_count - padded.length)).fill(0)].slice(0, def.main_count) as number[];
               setAllSets((prev) => {
-                const plays = def?.plays_per_ticket ?? 1;
-                const next = prev.length >= plays ? [...prev] : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
+                const plays = uiLines;
+                const next =
+                  prev.length >= plays
+                    ? [...prev]
+                    : [...prev, ...Array(plays - prev.length).fill(null).map(() => Array(def.main_count).fill(0))];
                 const copy = next.map((s) => [...s]);
                 copy[lineIdx] = result;
                 return copy;
@@ -1068,7 +1387,7 @@ export default function CheckTicketScreen({
 
         return (
           <View key={lineIdx} style={styles.lineBlock}>
-            {(def?.plays_per_ticket ?? 1) > 1 && (
+            {(uiLines > 1 || (def?.plays_per_ticket ?? 1) > 1) && (
               <Text style={styles.lineLabel}>Line {lineIdx + 1}</Text>
             )}
             {isPbMm ? (
@@ -1084,7 +1403,7 @@ export default function CheckTicketScreen({
                     onChangeText={(t) => {
                       const digits = t.replace(/\D/g, '').slice(0, String(def.special_max).length);
                       setSpecialByLine((prev) => {
-                        const plays = def?.plays_per_ticket ?? 1;
+                        const plays = uiLines;
                         const next = [...prev];
                         while (next.length < plays) next.push('');
                         next[lineIdx] = digits;
@@ -1104,6 +1423,34 @@ export default function CheckTicketScreen({
           </View>
         );
       })}
+      {supportsFlexibleLines(lotteryId) && uiLines < MAX_UI_LINES && (
+        <TouchableOpacity
+          style={styles.addLineBtn}
+          onPress={() => {
+            setUiLines((prev) => {
+              const nextLines = Math.min(MAX_UI_LINES, prev + 1);
+              if (nextLines === prev) return prev;
+              const cnt = def.main_count;
+              setAllSets((cur) => {
+                const next = [...cur];
+                while (next.length < nextLines) next.push(Array(cnt).fill(0));
+                return next;
+              });
+              if (lotteryId === 'powerball' || lotteryId === 'mega_millions') {
+                setSpecialByLine((cur) => {
+                  const next = [...cur];
+                  while (next.length < nextLines) next.push('');
+                  return next;
+                });
+              }
+              return nextLines;
+            });
+          }}
+        >
+          <Ionicons name="add" size={18} color={COLORS.gold} />
+          <Text style={styles.addLineText}>Add a line</Text>
+        </TouchableOpacity>
+      )}
 
       {def.special_count > 0 && !['lotto_max', 'lotto_649'].includes(lotteryId) && (
         <>
@@ -1123,57 +1470,99 @@ export default function CheckTicketScreen({
         </>
       )}
 
-      {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).length > 0 && (
+      {(showIndependentExtraBlock || showOtherAddOnBlocks) && (
         <View style={styles.addOnSection}>
-          <Text style={styles.label}>Add-ons (optional)</Text>
-          {addOnCatalog.filter((i) => isUserSelectableAddOn(i) && !HIDDEN_ADD_ON_CODES.has(i.add_on_code)).map((item) => {
-            if (item.add_on_code === 'EXTRA' || item.add_on_code === 'ENCORE' || item.add_on_code === 'TAG') {
-              const digits = item.input_schema_json?.digits ?? 7;
-              return (
-                <View key={item.add_on_code} style={styles.addOnBlock}>
-                  <TouchableOpacity
-                    style={[styles.addOnRow, addOnsSelected[item.add_on_code] && styles.addOnRowActive]}
-                    onPress={() => setAddOnsSelected((s) => ({ ...s, [item.add_on_code]: !s[item.add_on_code] }))}
-                  >
-                    <Ionicons name={addOnsSelected[item.add_on_code] ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
-                    <Text style={styles.addOnLabel}>{item.add_on_code}</Text>
-                  </TouchableOpacity>
-                  {addOnsSelected[item.add_on_code] && (
-                    <TextInput
-                      style={styles.addOnInput}
-                      value={addOnsInputs[item.add_on_code] ?? ''}
-                      onChangeText={(t) => setAddOnsInputs((s) => ({ ...s, [item.add_on_code]: t.replace(/\D/g, '').slice(0, digits) }))}
-                      placeholder={`${digits} digits`}
-                      placeholderTextColor={COLORS.textMuted}
-                      keyboardType="number-pad"
-                      maxLength={digits}
-                    />
-                  )}
-                </View>
-              );
-            }
-            if (item.add_on_code === 'MAXMILLIONS') {
-              return (
-                <View key={item.add_on_code} style={styles.addOnBlock}>
-                  <Text style={styles.addOnLabel}>Maxmillions (7 digits each, comma separated)</Text>
-                  <TextInput
-                    style={styles.addOnInput}
-                    value={(addOnsInputs.MAXMILLIONS ?? []).join(', ')}
-                    onChangeText={(t) =>
-                      setAddOnsInputs((s) => ({
-                        ...s,
-                        MAXMILLIONS: t.split(/[\s,]+/).map((x) => x.replace(/\D/g, '').slice(0, 7)).filter(Boolean),
-                      }))
-                    }
-                    placeholder="e.g. 1234567, 7654321"
-                    placeholderTextColor={COLORS.textMuted}
-                    keyboardType="number-pad"
-                  />
-                </View>
-              );
-            }
-            return null;
-          })}
+          {showIndependentExtraBlock ? (
+            <>
+              <Text style={styles.label}>Extra (optional)</Text>
+              {(() => {
+                const code: IndependentAddOnCode = independentCode ?? 'EXTRA';
+                const schFromCatalog = independentCatalogItem?.input_schema_json ?? null;
+                const sch = {
+                  ...schemaForOrphanIndependentAddOn(code, effectiveJurisdictionCode),
+                  ...(schFromCatalog ?? {}),
+                };
+                const rawValDigits = String(addOnsInputs[code] ?? '').replace(/\D/g, '');
+                const sep = typeof sch.groupSeparator === 'string' ? sch.groupSeparator : '-';
+                const baseDigits = typeof sch.digits === 'number' ? sch.digits : 7;
+                // If OCR already detected an 8-digit EXTRA (BC-style four pairs), honor it even when jurisdiction is NATIONAL.
+                const digits =
+                  code === 'EXTRA' && rawValDigits.length >= 8 ? 8 : baseDigits;
+                const inferredGroups =
+                  code === 'EXTRA' && digits === 8 ? ([2, 2, 2, 2] as number[]) : undefined;
+                const groups = Array.isArray(sch.displayGroups) ? sch.displayGroups : inferredGroups;
+                const rawMaxDigits = groups?.length
+                  ? groups.reduce((a, b) => a + Math.max(1, Number(b) || 0), 0)
+                  : digits;
+                const displayMaxLen = groups?.length ? rawMaxDigits + groups.length - 1 : rawMaxDigits;
+                const rawVal = String(addOnsInputs[code] ?? '');
+                const checked = !!addOnsSelected[code] || rawVal.replace(/\D/g, '').length > 0;
+                const showGroupedExtra = code === 'EXTRA' && !!groups?.length;
+                const displayVal = showGroupedExtra ? formatGroupedNumber(rawVal, groups!, sep) : rawVal;
+                return (
+                  <View key={`independent-${code}`} style={styles.addOnBlock}>
+                    <TouchableOpacity
+                      style={[styles.addOnRow, checked && styles.addOnRowActive]}
+                      onPress={() => setAddOnsSelected((s) => ({ ...s, [code]: !s[code] }))}
+                    >
+                      <Ionicons name={checked ? 'checkbox' : 'square-outline'} size={22} color={COLORS.gold} />
+                      <Text style={styles.addOnLabel}>{EXTRA_ADDON_UI_LABEL}</Text>
+                    </TouchableOpacity>
+                    {checked && (
+                      <TextInput
+                        style={styles.addOnInput}
+                        value={displayVal}
+                        onChangeText={(t) =>
+                          setAddOnsInputs((s) => ({
+                            ...s,
+                            [code]: t.replace(/\D/g, '').slice(0, rawMaxDigits),
+                          }))
+                        }
+                        placeholder={
+                          showGroupedExtra
+                            ? groups!.map((g) => 'x'.repeat(Math.max(1, Number(g) || 1))).join(sep)
+                            : `${rawMaxDigits} digits`
+                        }
+                        placeholderTextColor={COLORS.textMuted}
+                        keyboardType="number-pad"
+                        maxLength={displayMaxLen}
+                      />
+                    )}
+                  </View>
+                );
+              })()}
+            </>
+          ) : null}
+          {showOtherAddOnBlocks ? (
+            <>
+              <Text style={styles.label}>
+                {showIndependentExtraBlock ? 'Other add-ons' : 'Add-ons (optional)'}
+              </Text>
+              {catalogOtherItems.map((item) => {
+                if (item.add_on_code === 'MAXMILLIONS') {
+                  return (
+                    <View key={item.add_on_code} style={styles.addOnBlock}>
+                      <Text style={styles.addOnLabel}>Maxmillions (7 digits each, comma separated)</Text>
+                      <TextInput
+                        style={styles.addOnInput}
+                        value={(addOnsInputs.MAXMILLIONS ?? []).join(', ')}
+                        onChangeText={(t) =>
+                          setAddOnsInputs((s) => ({
+                            ...s,
+                            MAXMILLIONS: t.split(/[\s,]+/).map((x) => x.replace(/\D/g, '').slice(0, 7)).filter(Boolean),
+                          }))
+                        }
+                        placeholder="e.g. 1234567, 7654321"
+                        placeholderTextColor={COLORS.textMuted}
+                        keyboardType="number-pad"
+                      />
+                    </View>
+                  );
+                }
+                return null;
+              })}
+            </>
+          ) : null}
         </View>
       )}
 
@@ -1189,115 +1578,6 @@ export default function CheckTicketScreen({
       </TouchableOpacity>
 
       <BannerAdPlaceholder testId="check-bottom" userPlan={plan} />
-
-      {showPbDiagnosticUi ? (
-        <View style={styles.scanDiagnosticSection}>
-          {scanDiagnostic ? (
-            <>
-              <Text style={styles.scanDiagnosticTitle}>Scan diagnostic bundle (remove this block later)</Text>
-              <Text style={styles.scanDiagnosticHint}>
-                下面 file:// 为应用私有目录。发给 ChatGPT：先「保存到所选文件夹」把 ZIP
-                存到下载/文件，再点「打开 ChatGPT」在网页里用 📎 上传（若不支持 ZIP 可解压后上传图片）。iPhone
-                也可「分享诊断 ZIP」直接发到文件或其它 App。Android 系统分享无法附带 ZIP，请用保存 + 打开网页。
-              </Text>
-              {scanDiagnostic.folderUri && scanDiagnostic.folderUri.startsWith('file') ? (
-                <View style={styles.scanDiagnosticBtnRow}>
-                  {Platform.OS === 'ios' ? (
-                    <TouchableOpacity
-                      style={[
-                        styles.scanDiagnosticShareBtn,
-                        scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
-                      ]}
-                      disabled={scanDiagOp !== null}
-                      onPress={async () => {
-                        setScanDiagOp('share');
-                        try {
-                          await shareScanDiagnosticFolderAsZip(scanDiagnostic.folderUri);
-                        } catch (e) {
-                          Alert.alert('导出失败', (e as Error)?.message ?? String(e));
-                        } finally {
-                          setScanDiagOp(null);
-                        }
-                      }}
-                    >
-                      <Text style={styles.scanDiagnosticShareBtnText}>
-                        {scanDiagOp === 'share' ? '正在打包…' : '分享诊断 ZIP'}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[styles.scanDiagnosticShareBtn, styles.scanDiagnosticSaveFolderBtn]}
-                      onPress={() => {
-                        Alert.alert(
-                          '给 ChatGPT 发诊断包',
-                          '1）先点「保存到所选文件夹」，把 ZIP 存到手机（如「下载」）。\n2）再点「打开 ChatGPT」，在对话里点 📎 选择该 ZIP。\n\n若网页版不支持 ZIP，请用文件管理器解压后上传里面的 JPG/PNG。',
-                          [
-                            { text: '取消', style: 'cancel' },
-                            {
-                              text: '打开 ChatGPT',
-                              onPress: () => {
-                                void openChatGptForDiagnosticUpload().catch((e) =>
-                                  Alert.alert('打开失败', (e as Error)?.message ?? String(e)),
-                                );
-                              },
-                            },
-                          ],
-                        );
-                      }}
-                    >
-                      <Text style={styles.scanDiagnosticShareBtnText}>打开 ChatGPT 上传</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    style={[
-                      styles.scanDiagnosticShareBtn,
-                      styles.scanDiagnosticSaveFolderBtn,
-                      scanDiagOp !== null && styles.scanDiagnosticShareBtnDisabled,
-                    ]}
-                    disabled={scanDiagOp !== null}
-                    onPress={async () => {
-                      setScanDiagOp('folder');
-                      try {
-                        await saveScanDiagnosticFolderToChosenDirectory(scanDiagnostic.folderUri);
-                        Alert.alert('已保存', 'ZIP 已写入你选择的文件夹。');
-                      } catch (e) {
-                        Alert.alert('保存失败', (e as Error)?.message ?? String(e));
-                      } finally {
-                        setScanDiagOp(null);
-                      }
-                    }}
-                  >
-                    <Text style={styles.scanDiagnosticShareBtnText}>
-                      {scanDiagOp === 'folder' ? '正在写入…' : '保存到所选文件夹'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-              <Text style={styles.scanDiagnosticPath} selectable>
-                {scanDiagnostic.folderUri || '(no folder — see summary.reason)'}
-              </Text>
-              <Text style={styles.scanDiagnosticHint}>
-                Contains: 00_original.jpg, 01_perspective_corrected.jpg, 02_normalized_for_regions.jpg,
-                03_row_bands_overlay.jpg, row_*_cell_*_variant_*.png, summary.json — 失败时 summary 含 ok/reason。
-              </Text>
-              <ScrollView style={styles.scanDiagnosticJsonScroll} nestedScrollEnabled>
-                <Text style={styles.scanDiagnosticJson} selectable>
-                  {JSON.stringify(scanDiagnostic.summary, null, 2)}
-                </Text>
-              </ScrollView>
-            </>
-          ) : (
-            <>
-              <Text style={styles.scanDiagnosticTitle}>Powerball scan diagnostic</Text>
-              <Text style={styles.scanDiagnosticHint}>
-                {isPowerballScanDiagnosticEnabled()
-                  ? '位置没错：就在这条 Test Ad 横幅下面。若只有本段说明、没有路径与 JSON：请用手指把整页再向下拖一点（避免被底栏挡住），并确认是用「Scan ticket」扫完后 OCR 已跑完。仍无数据则 pipeline 未回调 onDiagnosticBundle。'
-                  : '诊断开关未开（release 需在 EAS production 环境配置 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1，并执行 eas update --channel production --environment production）。'}
-              </Text>
-            </>
-          )}
-        </View>
-      ) : null}
 
       <Modal visible={!!dateConfirmModal} transparent animationType="fade">
         <TouchableOpacity
@@ -1336,13 +1616,21 @@ export default function CheckTicketScreen({
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screenWrap: { flex: 1, backgroundColor: COLORS.bg },
   container: { flex: 1, backgroundColor: COLORS.bg },
   content: { paddingHorizontal: SPACING.screenPadding },
+  stickyHeader: {
+    backgroundColor: COLORS.bg,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.bgElevated,
+    paddingBottom: 6,
+  },
   backBtn: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   backText: { color: COLORS.textSecondary, fontSize: 16, marginLeft: 6 },
   title: { fontSize: 24, fontWeight: '700', color: COLORS.text, marginBottom: 24 },
@@ -1422,10 +1710,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 44,
     borderRadius: 10,
-    backgroundColor: '#152238',
+    backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: '#1e3254',
-    color: '#f8fafc',
+    borderColor: COLORS.bgElevated,
+    color: COLORS.text,
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
@@ -1461,6 +1749,7 @@ const styles = StyleSheet.create({
   },
   drawChipActive: { backgroundColor: COLORS.primary },
   drawChipText: { color: COLORS.text, fontSize: 14 },
+  drawChipTextActive: { color: COLORS.onFill },
   input: {
     backgroundColor: COLORS.bgCard,
     borderRadius: 10,
@@ -1476,7 +1765,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   checkBtnDisabled: { opacity: 0.5 },
-  checkBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  checkBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   entryRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   entryBtn: {
     flex: 1,
@@ -1509,37 +1798,64 @@ const styles = StyleSheet.create({
   devPreItem: { width: 88, alignItems: 'center', marginRight: 10 },
   devPreThumb: { width: 88, height: 72, borderRadius: 6, backgroundColor: COLORS.bgElevated },
   devPreCap: { color: COLORS.textMuted, fontSize: 9, marginTop: 4, width: '100%', textAlign: 'center' },
-  /** __DEV__ — scan diagnostic bundle; remove with BannerAdPlaceholder(check-bottom) block */
-  scanDiagnosticSection: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: COLORS.bgElevated,
-    borderWidth: 1,
-    borderColor: COLORS.bgCard,
-    borderStyle: 'dashed',
+  devViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 14,
   },
-  scanDiagnosticTitle: { color: COLORS.textMuted, fontSize: 11, fontWeight: '600', marginBottom: 8 },
-  scanDiagnosticPath: { color: COLORS.gold, fontSize: 11, marginBottom: 6 },
-  scanDiagnosticHint: { color: COLORS.textMuted, fontSize: 10, lineHeight: 15, marginBottom: 8 },
-  scanDiagnosticJsonScroll: { maxHeight: 200 },
-  scanDiagnosticJson: { color: COLORS.textSecondary, fontSize: 10, fontFamily: 'monospace' },
-  scanDiagnosticBtnRow: { width: '100%', gap: 10, marginBottom: 10 },
-  scanDiagnosticShareBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  devViewerCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 14,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.bgElevated,
+    padding: 12,
+  },
+  devViewerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  devViewerTitle: { color: COLORS.text, fontSize: 14, fontWeight: '700', flex: 1, marginRight: 10 },
+  devViewerImgWrap: { width: '100%', height: 420, borderRadius: 10, overflow: 'hidden', backgroundColor: COLORS.bgElevated },
+  devViewerImg: { width: '100%', height: '100%' },
+  devViewerUri: { marginTop: 10, color: COLORS.textMuted, fontSize: 10 },
+  devViewerActions: { flexDirection: 'row', gap: 10, marginTop: 12, justifyContent: 'flex-end', alignItems: 'center' },
+  devViewerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary,
+  },
+  devViewerBtnSecondary: { backgroundColor: COLORS.bgElevated },
+  devViewerBtnText: { color: COLORS.onFill, fontSize: 13, fontWeight: '700' },
+  devOcrRawBlock: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: '#0f1729',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+  },
+  devOcrRawScroll: { maxHeight: 220, marginTop: 6 },
+  devOcrRawText: { color: COLORS.textSecondary, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
+  hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
+  addLineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
     borderRadius: 10,
     backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: COLORS.gold,
+    borderColor: COLORS.bgElevated,
+    marginBottom: 18,
   },
-  scanDiagnosticSaveFolderBtn: {
-    borderColor: COLORS.textSecondary,
-  },
-  scanDiagnosticShareBtnDisabled: { opacity: 0.6 },
-  scanDiagnosticShareBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600', textAlign: 'center' },
-  scanHint: { color: COLORS.textMuted, fontSize: 11, marginTop: 4, marginBottom: 8 },
-  hint: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 12 },
+  addLineText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
   readingOverlay: {
     flex: 1,
     backgroundColor: 'rgba(5,8,15,0.72)',
@@ -1555,7 +1871,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minWidth: 260,
     borderWidth: 1,
-    borderColor: '#1e3254',
+    borderColor: COLORS.bgElevated,
   },
   readingTitle: { marginTop: 18, color: COLORS.text, fontSize: 17, fontWeight: '700' },
   readingSubtitle: { marginTop: 6, color: COLORS.textMuted, fontSize: 13, textAlign: 'center' },

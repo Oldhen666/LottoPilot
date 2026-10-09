@@ -7,8 +7,9 @@ import { getRecords } from '../db/sqlite';
 import { getCompassPayload } from '../compass/compassCache';
 import type { CheckRecord } from '../db/sqlite';
 import type { Draw } from '../types/lottery';
+import { SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 
-const PRELOAD_LOTTERIES = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'] as const;
+const PRELOAD_LOTTERIES = SUPPORTED_LOTTERY_IDS;
 
 // Records cache for Strategy Lab, Insights
 let recordsCache: CheckRecord[] | null = null;

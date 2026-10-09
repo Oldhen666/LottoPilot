@@ -62,13 +62,19 @@ describe('computeCompass', () => {
   });
 
   it('returns payload when draws >= minDrawsRequired', () => {
-    const draws = makeDraws(120, '2023-01-01');
-    const result = computeCompass(draws, 'lotto_max', 7, 49);
+    const draws = makeDraws(120, '2023-01-01').map((d) => ({ ...d, special_numbers: [5] }));
+    const result = computeCompass(draws, 'lotto_max', 7, 49, {}, { min: 1, max: 50 });
     expect(result).not.toBeNull();
     expect(result!.gameCode).toBe('lotto_max');
     expect(result!.trendScores.length).toBe(49);
     expect(result!.positionTopK.length).toBe(7);
     expect(result!.shapeStats).toBeDefined();
+    expect(result!.positionFrequencies).toHaveLength(7);
+    expect(result!.positionFrequencies![0].counts.length).toBe(49);
+    expect(result!.positionFrequencies![0].counts.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+    expect(result!.specialFrequency).toBeDefined();
+    expect(result!.specialFrequency!.counts.length).toBe(50);
+    expect(result!.specialFrequency!.counts.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
   });
 
   it('trendScore is in range 0-100 for all numbers', () => {

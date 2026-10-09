@@ -12,7 +12,7 @@ export interface PrizeTierRow {
 export const PRIZE_EXPLANATIONS: Record<LotteryId, { title: string; intro: string; tiers: PrizeTierRow[]; note: string }> = {
   lotto_max: {
     title: 'Lotto Max Prize Rules',
-    intro: 'Pick 7 main numbers (1–50) + 1 Bonus. Main numbers match against the draw; Bonus is drawn from the 8 drawn numbers (7 main + 1 bonus).',
+    intro: 'Pick 7 main numbers (1–52) + 1 Bonus. Main numbers match against the draw; Bonus is drawn from the 8 drawn numbers (7 main + 1 bonus).',
     tiers: [
       { match: '7 main + Bonus', prize: 'Jackpot' },
       { match: '7 main', prize: 'Match 7 (pari-mutuel)' },
@@ -25,7 +25,7 @@ export const PRIZE_EXPLANATIONS: Record<LotteryId, { title: string; intro: strin
       { match: '3 main + Bonus', prize: '$20' },
       { match: '3 main', prize: 'Free Play' },
     ],
-    note: '3 plays per ticket. Prizes in CAD; amounts may vary by province.',
+    note: 'Numbers are 1–52. Prizes in CAD; amounts may vary by province.',
   },
   lotto_649: {
     title: 'Lotto 6/49 Prize Rules',

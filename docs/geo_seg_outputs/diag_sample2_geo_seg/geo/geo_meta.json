@@ -1,0 +1,14 @@
+{
+  "deskew_angle": -1.7878916055067675,
+  "perspective_applied": false,
+  "roi_box": [
+    0,
+    616,
+    1751,
+    1357
+  ],
+  "deskew_enabled": true,
+  "perspective_enabled": true,
+  "roi_enabled": true,
+  "input": "C:\\Users\\xiang\\Documents\\projects\\LottoPilot\\.diag_sample2\\00_original.jpg"
+}

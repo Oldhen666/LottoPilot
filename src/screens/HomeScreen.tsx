@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,22 +13,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLatestDraw, invalidateDrawsCache } from '../hooks/useDraws';
 import { onAppActiveRefetch } from '../utils/appActiveRefetch';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { COLORS, SPACING } from '../constants/theme';
 import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
 import { useEntitlements } from '../hooks/useEntitlements';
 import type { LotteryId } from '../types/lottery';
 
-const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+const LOTTERY_IDS: readonly LotteryId[] = SUPPORTED_LOTTERY_IDS;
 
 interface Props {
   selectedLottery: LotteryId;
   onLotteryChange: (id: LotteryId) => void;
   onCheckTicket: () => void;
   onViewDrawHistory: () => void;
-  /** First-run Check tab coach marks (steps 0–1 only) */
-  checkTourStep?: 0 | 1;
-  onCheckTourHighlight?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 }
 
 export default function HomeScreen({
@@ -36,8 +33,6 @@ export default function HomeScreen({
   onLotteryChange,
   onCheckTicket,
   onViewDrawHistory,
-  checkTourStep,
-  onCheckTourHighlight,
 }: Props) {
   const insets = useSafeAreaInsets();
   const { plan } = useEntitlements();
@@ -52,33 +47,6 @@ export default function HomeScreen({
     setRefetchTrigger((n) => n + 1);
   }, [selectedLottery]);
   const def = LOTTERY_DEFS[selectedLottery];
-  const lotteryCoachRef = useRef<View>(null);
-  const checkBtnCoachRef = useRef<View>(null);
-
-  const reportCoachRect = useCallback(
-    (ref: React.RefObject<View | null>) => {
-      requestAnimationFrame(() => {
-        ref.current?.measureInWindow((x, y, w, h) => {
-          onCheckTourHighlight?.({ x, y, width: w, height: h });
-        });
-      });
-    },
-    [onCheckTourHighlight],
-  );
-
-  useEffect(() => {
-    if (checkTourStep === undefined) return;
-    const t = setTimeout(() => {
-      if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
-      else if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
-    }, 180);
-    return () => clearTimeout(t);
-  }, [checkTourStep, selectedLottery, reportCoachRect]);
-
-  const onCoachScrollSync = useCallback(() => {
-    if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
-    else if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
-  }, [checkTourStep, reportCoachRect]);
 
   const [refreshing, setRefreshing] = useState(false);
   const onPullRefresh = useCallback(() => {
@@ -94,25 +62,16 @@ export default function HomeScreen({
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + SPACING.screenPadding, paddingBottom: SPACING.screenPaddingBottom }]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} tintColor={COLORS.primary} />}
-      onScrollEndDrag={onCoachScrollSync}
-      onMomentumScrollEnd={onCoachScrollSync}
     >
       <View style={styles.headerRow}>
         <Ionicons name="ticket" size={28} color={COLORS.gold} style={styles.logoIcon} />
         <View>
           <Text style={styles.title}>LottoPilot</Text>
-          <Text style={styles.subtitle}>Official lottery ticket checker</Text>
+          <Text style={styles.subtitle}>Lottery Result Checker &amp; Pick Generator</Text>
         </View>
       </View>
 
-      <View
-        style={styles.dropdownWrap}
-        ref={lotteryCoachRef}
-        collapsable={false}
-        onLayout={() => {
-          if (checkTourStep === 0) reportCoachRect(lotteryCoachRef);
-        }}
-      >
+      <View style={styles.dropdownWrap}>
         <Text style={styles.label}>Lottery</Text>
         <TouchableOpacity
           style={styles.dropdown}
@@ -178,31 +137,23 @@ export default function HomeScreen({
               {error || 'No draw data yet. Run "npm run scrape" to fetch draws, or check .env and restart.'}
             </Text>
             <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
-              <Ionicons name="refresh" size={16} color={COLORS.text} />
+              <Ionicons name="refresh" size={16} color={COLORS.onFill} />
               <Text style={styles.refreshBtnText}>Refresh from Supabase</Text>
             </TouchableOpacity>
           </View>
         )}
       </View>
 
-      <View
-        ref={checkBtnCoachRef}
-        collapsable={false}
-        onLayout={() => {
-          if (checkTourStep === 1) reportCoachRect(checkBtnCoachRef);
-        }}
-      >
         <TouchableOpacity style={styles.primaryBtn} onPress={onCheckTicket}>
-          <Ionicons name="scan" size={20} color={COLORS.text} style={styles.btnIcon} />
+          <Ionicons name="scan" size={20} color={COLORS.onFill} style={styles.btnIcon} />
           <Text style={styles.primaryBtnText}>Check My Ticket</Text>
         </TouchableOpacity>
-      </View>
 
       <TouchableOpacity
         style={styles.secondaryBtn}
         onPress={onViewDrawHistory}
       >
-        <Ionicons name="list" size={20} color={COLORS.textSecondary} style={styles.btnIcon} />
+        <Ionicons name="list" size={20} color={COLORS.onGold} style={styles.btnIcon} />
         <Text style={styles.secondaryBtnText}>View Draw History</Text>
       </TouchableOpacity>
 
@@ -279,7 +230,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ballSpecial: { backgroundColor: COLORS.success },
-  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
+  ballText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   noData: { color: COLORS.textMuted, fontSize: 14 },
   refreshBtn: {
     flexDirection: 'row',
@@ -292,7 +243,7 @@ const styles = StyleSheet.create({
     gap: 8,
     alignSelf: 'flex-start',
   },
-  refreshBtnText: { color: COLORS.text, fontWeight: '600', fontSize: 14 },
+  refreshBtnText: { color: COLORS.onFill, fontWeight: '600', fontSize: 14 },
   primaryBtn: {
     backgroundColor: COLORS.primary,
     padding: 16,
@@ -303,15 +254,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   btnIcon: { marginRight: 8 },
-  primaryBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  primaryBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   secondaryBtn: {
     padding: 16,
     borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.bgElevated,
+    backgroundColor: COLORS.gold,
   },
-  secondaryBtnText: { color: COLORS.textSecondary, fontSize: 16 },
+  secondaryBtnText: { color: COLORS.onGold, fontSize: 16, fontWeight: '700' },
 });

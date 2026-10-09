@@ -6,7 +6,7 @@ process.env.PROJECT_ROOT = projectRoot;
 process.chdir(projectRoot);
 require('dotenv').config();
 require('ts-node').register({ project: path.join(projectRoot, 'scripts', 'tsconfig.json') });
-const { fetchLatestDates, runUpdate, LOTTERY_LABELS } = require('../scripts/monitor-core');
+const { fetchLatestDates, startUpdate, getScrapeStatus, readScrapeLogTail, LOTTERY_LABELS } = require('../scripts/monitor-core');
 
 let mainWindow;
 
@@ -30,4 +30,22 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
 
 ipcMain.handle('check', async () => ({ status: await fetchLatestDates(), labels: LOTTERY_LABELS }));
-ipcMain.handle('update', async () => runUpdate());
+ipcMain.handle('update', async () => startUpdate());
+ipcMain.handle('scrape-status', async () => getScrapeStatus());
+ipcMain.handle('scrape-log', async () => readScrapeLogTail(15));
+/** Midnight auto-update: wait until scrape finishes */
+ipcMain.handle('update-and-wait', async () => {
+  const started = startUpdate();
+  if (!started.started) return started;
+  return new Promise((resolve) => {
+    const tick = () => {
+      const st = getScrapeStatus();
+      if (!st.busy) {
+        resolve({ started: true, lastError: st.lastError });
+        return;
+      }
+      setTimeout(tick, 1500);
+    };
+    tick();
+  });
+});

@@ -1,4 +1,7 @@
-import type { LotteryDef } from '../types/lottery';
+import type { LotteryDef, LotteryId } from '../types/lottery';
+
+/** Games offered in the app, scraper, compass, and monitor. */
+export const SUPPORTED_LOTTERY_IDS: readonly LotteryId[] = ['lotto_max', 'lotto_649'];
 
 export const LOTTERY_DEFS: Record<string, LotteryDef> = {
   lotto_max: {
@@ -8,12 +11,13 @@ export const LOTTERY_DEFS: Record<string, LotteryDef> = {
     draw_frequency: 'weekly',
     main_count: 7,
     main_min: 1,
-    main_max: 50,
+    main_max: 52,
     special_count: 1,
     special_min: 1,
-    special_max: 50,
+    special_max: 52,
     source_url: 'https://www.olg.ca/en/lottery/play-lotto-max-encore.html',
-    plays_per_ticket: 3,
+    /** BC and others may print more than 3 plays when add-ons / bundles apply (e.g. 4 lines). */
+    plays_per_ticket: 6,
   },
   lotto_649: {
     id: 'lotto_649',

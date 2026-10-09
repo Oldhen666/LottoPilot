@@ -1,15 +1,39 @@
 /**
  * Expo app config - loads .env and passes to app via extra.
- * This ensures Supabase credentials are available even when process.env is not.
+ * Uses Node fs only (no dotenv package) so EAS / expo config works when node_modules is incomplete.
  */
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+
+(function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+    let val = trimmed.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    process.env[key] = val;
+  }
+})();
 
 module.exports = {
   expo: {
     name: 'LottoPilot',
     slug: 'LottoPilot',
     scheme: 'lottopilot',
-    version: '1.0.6',
+    version: '1.0.13',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
@@ -26,7 +50,7 @@ module.exports = {
         backgroundColor: '#0c1629',
       },
       package: 'com.oldhen666.LottoPilot',
-      versionCode: 34,
+      versionCode: 43,
       permissions: ['com.android.vending.BILLING', 'com.google.android.gms.permission.AD_ID'],
     },
     edgeToEdgeEnabled: true,
@@ -38,12 +62,15 @@ module.exports = {
     updates: {
       url: 'https://u.expo.dev/2ae23643-f627-4cfc-9214-764502ce4849',
     },
-    runtimeVersion: '1.0.6',
+    /** Keep 1.0.7 until Play build 38 ships; OTA fixes target installed v37 (runtime 1.0.7). */
+    runtimeVersion: '1.0.7',
     plugins: [
       [
         'react-native-google-mobile-ads',
         {
-          androidAppId: 'ca-app-pub-3940256099942544~3347511713',
+          /** LottoPilot Android — AdMob app (Play). */
+          androidAppId: 'ca-app-pub-1778212368956758~9185292273',
+          /** Replace when you add an iOS app in AdMob; until then Google sample avoids iOS native init issues in dev. */
           iosAppId: 'ca-app-pub-3940256099942544~1458002511',
         },
       ],
@@ -61,8 +88,6 @@ module.exports = {
       eas: {
         projectId: '2ae23643-f627-4cfc-9214-764502ce4849',
       },
-      /** 与 EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC=1 同步，供 release 包读取 */
-      powerballScanDiagnostic: process.env.EXPO_PUBLIC_POWERBALL_SCAN_DIAGNOSTIC === '1',
       supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
       supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
       authCallbackUrl: process.env.EXPO_PUBLIC_AUTH_CALLBACK_URL || '',

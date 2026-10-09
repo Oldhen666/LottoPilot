@@ -3,7 +3,7 @@ import type { LotteryId } from '../types/lottery';
 
 const KEY = '@LottoPilot/check_home_lottery_v1';
 
-const VALID: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+const VALID: LotteryId[] = ['lotto_max', 'lotto_649'];
 
 export async function getLastHomeLottery(): Promise<LotteryId | null> {
   try {

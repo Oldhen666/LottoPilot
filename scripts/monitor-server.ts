@@ -4,14 +4,9 @@
  * 浏览器打开 http://localhost:3333
  */
 import * as http from 'http';
-import { fetchLatestDates, runUpdate, LOTTERY_LABELS, type Status } from './monitor-core';
+import { fetchLatestDates, startUpdate, getScrapeStatus, LOTTERY_LABELS, type Status } from './monitor-core';
 
 const PORT = parseInt(process.env.MONITOR_PORT || '3333', 10);
-
-/** Background scrape state for Web UI (HTTP cannot block for 10+ min while npm run scrape runs). */
-let scrapeBusy = false;
-let scrapeLastError: string | null = null;
-let scrapeLastFinishedAt: number | null = null;
 
 const HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -129,8 +124,10 @@ const HTML = `<!DOCTYPE html>
         var bits = [];
         if (s.extra_ok !== null && s.extra_ok !== undefined) bits.push('EXTRA:' + (s.extra_ok ? '✓' : '缺'));
         if (s.encore_ok !== null && s.encore_ok !== undefined) bits.push('ENCORE:' + (s.encore_ok ? '✓' : '缺'));
+        if (s.power_play_ok !== null && s.power_play_ok !== undefined) bits.push('PowerPlay:' + (s.power_play_ok ? '✓' : '缺'));
+        if (s.mega_multiplier_ok !== null && s.mega_multiplier_ok !== undefined) bits.push('MegaMult:' + (s.mega_multiplier_ok ? '✓' : '缺'));
         const addon = bits.length ? '<div class="exp">' + bits.join(' · ') + '</div>' : '';
-        const addonWarn = s.extra_ok === false || s.encore_ok === false;
+        const addonWarn = s.extra_ok === false || s.power_play_ok === false || s.mega_multiplier_ok === false;
         const badge = s.stale ? '<span class="badge warn">需更新</span>' : '<span class="badge ok">正常</span>';
         var cardCls = 'card' + (s.stale ? ' stale' : '') + (addonWarn ? ' addon-warn' : '');
         return '<div class="' + cardCls + '">' +
@@ -275,38 +272,18 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse) {
   }
   if (url === '/api/scrape-status' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        busy: scrapeBusy,
-        lastError: scrapeLastError,
-        lastFinishedAt: scrapeLastFinishedAt,
-      }),
-    );
+    res.end(JSON.stringify(getScrapeStatus()));
     return;
   }
   if (url === '/api/update' && req.method === 'POST') {
-    if (scrapeBusy) {
+    const started = startUpdate();
+    if (!started.started) {
       res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: false, message: '抓取已在运行中，请稍候' }));
+      res.end(JSON.stringify({ ok: false, message: started.message }));
       return;
     }
-    scrapeBusy = true;
-    scrapeLastError = null;
     res.writeHead(202, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ ok: true, started: true, message: 'Scrape started' }));
-    runUpdate()
-      .then(() => {
-        scrapeLastFinishedAt = Date.now();
-        console.log('[monitor] npm run scrape finished OK');
-      })
-      .catch((e: Error) => {
-        scrapeLastError = String(e?.message ?? e);
-        scrapeLastFinishedAt = Date.now();
-        console.error('[monitor] npm run scrape failed:', scrapeLastError);
-      })
-      .finally(() => {
-        scrapeBusy = false;
-      });
     return;
   }
   res.writeHead(404);

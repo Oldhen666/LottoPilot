@@ -99,6 +99,166 @@ function tileMapping(hist: Uint32Array, pixelCount: number): Uint8Array {
 /**
  * CLAHE on grayscale. tileCount = tiles per axis (e.g. 8 => 8x8 tiles).
  */
+/**
+ * Gamma curve on grayscale (gamma < 1 lifts mid-tones, similar to Python deskew preprocess).
+ */
+export function gammaGray(gray: Uint8ClampedArray, gamma: number): Uint8ClampedArray {
+  const g = Math.max(0.2, Math.min(3, gamma));
+  const inv = 1 / 255;
+  const out = new Uint8ClampedArray(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    const x = gray[i]! * inv;
+    out[i] = Math.round(Math.min(255, Math.max(0, Math.pow(x, g) * 255)));
+  }
+  return out;
+}
+
+/**
+ * Percentile stretch (paper toward white) — mirrors Python `_levels_white_background` loosely.
+ */
+export function percentileStretchGray(
+  gray: Uint8ClampedArray,
+  pLoPercent: number,
+  pHiPercent: number,
+): Uint8ClampedArray {
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < gray.length; i++) hist[gray[i]!]++;
+  const total = gray.length;
+  let acc = 0;
+  let lo = 0;
+  let hi = 255;
+  const tLo = (total * Math.max(0, Math.min(100, pLoPercent))) / 100;
+  const tHi = (total * Math.max(0, Math.min(100, pHiPercent))) / 100;
+  for (let v = 0; v < 256; v++) {
+    acc += hist[v]!;
+    if (acc >= tLo) {
+      lo = v;
+      break;
+    }
+  }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) {
+    acc += hist[v]!;
+    if (acc >= total - tHi) {
+      hi = v;
+      break;
+    }
+  }
+  if (hi <= lo + 1) return gray.slice();
+  const out = new Uint8ClampedArray(gray.length);
+  const scale = 255 / (hi - lo);
+  for (let i = 0; i < gray.length; i++) {
+    const v = ((gray[i]! - lo) * scale) | 0;
+    out[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+  }
+  return out;
+}
+
+/**
+ * Deskew-style background flatten: divide by large-scale illumination estimate.
+ * Mirrors Python preprocess_ticket_combined._background_flatten (g / bg * 255).
+ */
+export function backgroundFlattenDivideGray(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  blurKernel: number,
+  sigma: number,
+): Uint8ClampedArray {
+  const k = (blurKernel | 1) > 0 ? (blurKernel | 1) : 31;
+  // OpenCV GaussianBlur uses sigma=0 as "auto". Our implementation needs sigma>0.
+  const s = sigma > 0 ? sigma : Math.max(0.8, k / 6);
+  const bg = gaussianBlurGray(gray, width, height, k, s);
+  const out = new Uint8ClampedArray(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    const d = Math.max(1, bg[i]!);
+    const v = (gray[i]! / d) * 255.0;
+    out[i] = v < 0 ? 0 : v > 255 ? 255 : (v + 0.5) | 0;
+  }
+  return out;
+}
+
+/** Minimum filter (grayscale erosion) with small odd kernel. */
+export function minimumFilterGray(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  ksize = 3,
+): Uint8ClampedArray {
+  const k = Math.max(3, ksize | 1);
+  const r = (k - 1) >> 1;
+  const out = new Uint8ClampedArray(gray.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let mn = 255;
+      const y0 = Math.max(0, y - r);
+      const y1 = Math.min(height - 1, y + r);
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(width - 1, x + r);
+      for (let yy = y0; yy <= y1; yy++) {
+        const row = yy * width;
+        for (let xx = x0; xx <= x1; xx++) {
+          const v = gray[row + xx]!;
+          if (v < mn) mn = v;
+          if (mn === 0) break;
+        }
+        if (mn === 0) break;
+      }
+      out[y * width + x] = mn;
+    }
+  }
+  return out;
+}
+
+/**
+ * Photoshop-like "Linear Light" emphasis (approx), blended with opacity.
+ * Mirrors preprocess_ticket_combined._blend_linear_light_approx.
+ */
+export function blendLinearLightApproxGray(
+  base: Uint8ClampedArray,
+  blend: Uint8ClampedArray,
+  opacity = 0.5,
+): Uint8ClampedArray {
+  const a = Math.max(0, Math.min(1, opacity));
+  if (a <= 0) return base.slice();
+  const out = new Uint8ClampedArray(base.length);
+  for (let i = 0; i < base.length; i++) {
+    const b = base[i]! / 255.0;
+    const s = blend[i]! / 255.0;
+    let lin = b + 2.0 * (s - 0.5);
+    if (lin < 0) lin = 0;
+    else if (lin > 1) lin = 1;
+    const v = (1.0 - a) * b + a * lin;
+    out[i] = (v * 255.0 + 0.5) | 0;
+  }
+  return out;
+}
+
+/**
+ * Word-like clarity + contrast finish (unsharp + linear gain).
+ * Mirrors preprocess_ticket_combined._word_style_clarity_contrast.
+ */
+export function clarityContrastGray(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  opts?: { clarityAmount?: number; brightnessCentered?: number; contrastGain?: number },
+): Uint8ClampedArray {
+  const clarity = opts?.clarityAmount ?? 1.1;
+  const brightness = opts?.brightnessCentered ?? 0.06;
+  const gain = opts?.contrastGain ?? 1.28;
+  const blur = gaussianBlurGray(gray, width, height, 7, 1.2);
+  const out = new Uint8ClampedArray(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    const g = gray[i]!;
+    const high = g - blur[i]!;
+    let sharp = g + clarity * high;
+    sharp = sharp * gain + brightness * 255.0;
+    out[i] = sharp < 0 ? 0 : sharp > 255 ? 255 : (sharp + 0.5) | 0;
+  }
+  return out;
+}
+
 export function claheGray(
   gray: Uint8ClampedArray,
   width: number,
@@ -207,6 +367,58 @@ export function highPassSubtractBackground(
 ): Uint8ClampedArray {
   const bg = gaussianBlurGray(gray, width, height, blurKernel | 1, sigma);
   return subtractBackground(gray, bg);
+}
+
+/**
+ * Suppress long, thin vertical strokes (pen marks / scan seams).
+ * Heuristic: detect columns with unusually high ink coverage, then inpaint using neighbor columns.
+ */
+export function suppressLongVerticalStrokes(
+  gray: Uint8ClampedArray,
+  width: number,
+  height: number,
+  opts?: { inkThreshold?: number; minCoverage?: number; maxCols?: number },
+): Uint8ClampedArray {
+  const inkTh = opts?.inkThreshold ?? 175;
+  const minCov = Math.max(0.1, Math.min(0.95, opts?.minCoverage ?? 0.35));
+  const maxCols = Math.max(1, Math.min(width, opts?.maxCols ?? Math.max(6, Math.floor(width * 0.02))));
+
+  const colInk = new Uint32Array(width);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      if (gray[row + x]! < inkTh) colInk[x]! += 1;
+    }
+  }
+
+  // Pick the worst offenders up to maxCols.
+  const candidates: { x: number; c: number }[] = [];
+  const minCount = Math.floor(height * minCov);
+  for (let x = 0; x < width; x++) {
+    const c = colInk[x]!;
+    if (c >= minCount) candidates.push({ x, c });
+  }
+  if (candidates.length === 0) return gray;
+  candidates.sort((a, b) => b.c - a.c);
+  const chosen = candidates.slice(0, maxCols).map((v) => v.x);
+  const mask = new Uint8Array(width);
+  for (const x of chosen) mask[x] = 1;
+
+  const out = gray.slice();
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (const x of chosen) {
+      // Inpaint from neighbors (prefer closest non-masked).
+      let xl = x - 1;
+      while (xl >= 0 && mask[xl]) xl--;
+      let xr = x + 1;
+      while (xr < width && mask[xr]) xr++;
+      const vl = xl >= 0 ? out[row + xl]! : out[row + x]!;
+      const vr = xr < width ? out[row + xr]! : out[row + x]!;
+      out[row + x] = ((vl + vr) / 2) | 0;
+    }
+  }
+  return out;
 }
 
 function integralGray(gray: Uint8ClampedArray, width: number, height: number): Float64Array {

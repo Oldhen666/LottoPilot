@@ -1,14 +1,18 @@
 /**
- * LottoPilot theme: deep blue / indigo + neutral gray + gold accents
+ * LottoPilot theme: light gray surfaces + gold accents
  */
 
 export const COLORS = {
-  // Deep blue / indigo
-  bg: '#0c1629',
-  bgCard: '#152238',
-  bgElevated: '#1e3254',
-  primary: '#4f46e5',
-  primaryLight: '#6366f1',
+  // Light gray page, slightly lighter cards
+  bg: '#e6e6e6',
+  bgCard: '#f4f4f4',
+  bgElevated: '#d8d8d8',
+  /** Label color on gold / bright buttons (was the old dark page color). */
+  onGold: '#1a1a1a',
+  /** Digits on indigo / green number balls. */
+  onFill: '#f8fafc',
+  primary: '#1a1a1a',
+  primaryLight: '#3f3f46',
 
   // Neutral gray
   gray900: '#1f2937',
@@ -27,10 +31,10 @@ export const COLORS = {
   error: '#ef4444',
   warning: '#f59e0b',
 
-  // Text
-  text: '#f8fafc',
-  textSecondary: '#94a3b8',
-  textMuted: '#64748b',
+  // Text on light surfaces
+  text: '#1a1a1a',
+  textSecondary: '#3f3f46',
+  textMuted: '#5c5c5c',
 } as const;
 
 export const SPACING = {

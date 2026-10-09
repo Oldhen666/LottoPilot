@@ -1,17 +1,20 @@
 /**
- * Strategy Set storage: multiple sets per lottery.
- * Free: 3 sets. Pro/AI Pro: up to 10 sets.
+ * Strategy Set storage: exactly one saved strategy per lottery (local).
+ * Migrates legacy multi-set (A/B/C…) data by keeping the previously active set (same id) so Pick Book / generated picks stay linked.
  */
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import type { StrategySet } from '../types/strategy';
-import { getDefaultFeatureWeights, type FeatureId } from '../constants/strategyFeatures';
-import { getEntitlements } from './entitlements';
+import {
+  getDefaultFeatureWeights,
+  snapCommonPenalty01,
+  featureWeight01AfterRefineDelta,
+  type FeatureId,
+} from '../constants/strategyFeatures';
+import { isStrategyPlayStyleId } from '../constants/strategyPlayStyle';
 
 const PREFIX = 'lottopilot_strategysets_';
 const ACTIVE_KEY = 'lottopilot_strategysets_active_';
-const MAX_SETS_FREE = 3;
-const MAX_SETS_PRO = 10;
 
 const isWeb = Platform.OS === 'web';
 
@@ -38,9 +41,59 @@ function activeKey(lotteryId: string) {
   return `${ACTIVE_KEY}${lotteryId}`;
 }
 
+/** @deprecated Multi-set UI removed; always one strategy per lottery. Kept for compatibility. */
 export async function getMaxSets(): Promise<number> {
-  const ent = await getEntitlements();
-  return ent.proUnlocked ? MAX_SETS_PRO : MAX_SETS_FREE;
+  return 1;
+}
+
+/** Legacy persisted shapes before luckyOnesDigit. */
+type LegacyStrategyFields = {
+  luckyNumbers?: number[];
+  luckyBirthdayDay?: number;
+  luckyOnesDigit?: number;
+};
+
+function normalizeLuckyOnesDigit(raw: StrategySet & LegacyStrategyFields): number | undefined {
+  const d = raw.luckyOnesDigit;
+  if (typeof d === 'number' && !Number.isNaN(d)) {
+    const r = Math.round(d);
+    if (r >= 0 && r <= 9) return r;
+  }
+  const legacy = raw.luckyNumbers;
+  if (Array.isArray(legacy) && legacy.length > 0 && typeof legacy[0] === 'number') {
+    return ((legacy[0] % 10) + 10) % 10;
+  }
+  return undefined;
+}
+
+function mapSetDefaults(s: StrategySet): StrategySet {
+  const legacy = s as StrategySet & LegacyStrategyFields;
+  const luckyOnesDigit = normalizeLuckyOnesDigit(legacy);
+  const next: StrategySet = {
+    id: s.id,
+    name: s.name,
+    lotteryId: s.lotteryId,
+    featureWeights: s.featureWeights,
+    createdAt: s.createdAt,
+    luckyBiasStrength: s.luckyBiasStrength ?? 'off',
+    autoPilotPlayStyle: isStrategyPlayStyleId((s as StrategySet).autoPilotPlayStyle)
+      ? (s as StrategySet).autoPilotPlayStyle
+      : 'balanced',
+  };
+  if (luckyOnesDigit !== undefined) next.luckyOnesDigit = luckyOnesDigit;
+  return next;
+}
+
+/** Collapse legacy A/B/C… rows to a single persisted strategy (keeps chosen id). */
+async function persistSingleStrategy(lotteryId: string, chosen: StrategySet): Promise<StrategySet> {
+  const merged: StrategySet = {
+    ...mapSetDefaults(chosen),
+    name: 'My strategy',
+    lotteryId,
+  };
+  await setItem(storageKey(lotteryId), JSON.stringify([merged]));
+  await setActiveSetId(lotteryId, merged.id);
+  return merged;
 }
 
 export async function getStrategySets(lotteryId: string): Promise<StrategySet[]> {
@@ -53,11 +106,14 @@ export async function getStrategySets(lotteryId: string): Promise<StrategySet[]>
   try {
     const arr = JSON.parse(raw) as StrategySet[];
     if (Array.isArray(arr) && arr.length > 0) {
-      return arr.map((s) => ({
-        ...s,
-        luckyNumbers: s.luckyNumbers ?? [],
-        luckyBiasStrength: s.luckyBiasStrength ?? 'off',
-      }));
+      const mapped = arr.map(mapSetDefaults);
+      if (mapped.length > 1) {
+        const activeId = await getActiveSetId(lotteryId);
+        const pick = mapped.find((s) => s.id === activeId) ?? mapped[0];
+        const one = await persistSingleStrategy(lotteryId, pick);
+        return [one];
+      }
+      return mapped;
     }
   } catch {
     /* */
@@ -70,11 +126,17 @@ export async function getStrategySets(lotteryId: string): Promise<StrategySet[]>
 function createDefaultSets(lotteryId: string): StrategySet[] {
   const t = Date.now();
   const weights = getDefaultFeatureWeights();
-  const base = { luckyNumbers: [], luckyBiasStrength: 'off' as const };
+  const base = { luckyBiasStrength: 'off' as const };
   return [
-    { id: `set_${t}_1`, name: 'Set A', lotteryId, featureWeights: { ...weights }, ...base, createdAt: new Date().toISOString() },
-    { id: `set_${t}_2`, name: 'Set B', lotteryId, featureWeights: { ...weights }, ...base, createdAt: new Date().toISOString() },
-    { id: `set_${t}_3`, name: 'Set C', lotteryId, featureWeights: { ...weights }, ...base, createdAt: new Date().toISOString() },
+    {
+      id: `set_${t}`,
+      name: 'My strategy',
+      lotteryId,
+      featureWeights: { ...weights },
+      autoPilotPlayStyle: 'balanced',
+      ...base,
+      createdAt: new Date().toISOString(),
+    },
   ];
 }
 
@@ -97,32 +159,19 @@ export async function getActiveStrategySet(lotteryId: string): Promise<StrategyS
 }
 
 export async function saveStrategySets(lotteryId: string, sets: StrategySet[]): Promise<void> {
-  const max = await getMaxSets();
-  const trimmed = sets.slice(0, max);
-  await setItem(storageKey(lotteryId), JSON.stringify(trimmed));
+  const first = sets[0];
+  if (!first) return;
+  await setItem(storageKey(lotteryId), JSON.stringify([{ ...mapSetDefaults(first), lotteryId }]));
 }
 
 export async function createStrategySet(lotteryId: string): Promise<StrategySet | null> {
-  const sets = await getStrategySets(lotteryId);
-  const max = await getMaxSets();
-  if (sets.length >= max) return null;
-  const weights = getDefaultFeatureWeights();
-  const newSet: StrategySet = {
-    id: `set_${Date.now()}`,
-    name: `Set ${String.fromCharCode(65 + sets.length)}`,
-    lotteryId,
-    featureWeights: { ...weights },
-    luckyNumbers: [],
-    luckyBiasStrength: 'off',
-    createdAt: new Date().toISOString(),
-  };
-  const updated = [...sets, newSet];
-  await saveStrategySets(lotteryId, updated);
-  return newSet;
+  const existing = await getStrategySets(lotteryId);
+  return existing[0] ?? null;
 }
 
 export async function deleteStrategySet(lotteryId: string, setId: string): Promise<void> {
   const sets = await getStrategySets(lotteryId);
+  if (sets.length <= 1) return;
   const filtered = sets.filter((s) => s.id !== setId);
   if (filtered.length < 1) return;
   await saveStrategySets(lotteryId, filtered);
@@ -148,8 +197,14 @@ export async function applyFeatureAdjustment(
   for (const d of deltas) {
     const v = next.featureWeights[d.featureId];
     if (typeof v !== 'number') continue;
-    const delta = d.direction === 'increase' ? d.magnitude : -d.magnitude;
-    next.featureWeights[d.featureId] = Math.max(0, Math.min(1, v + delta));
+    next.featureWeights[d.featureId] = featureWeight01AfterRefineDelta(d.featureId, v, {
+      direction: d.direction,
+      magnitude: d.magnitude,
+    });
+  }
+  const cpp = next.featureWeights.common_pattern_penalty;
+  if (typeof cpp === 'number') {
+    next.featureWeights.common_pattern_penalty = snapCommonPenalty01(cpp);
   }
   await updateStrategySet(next);
   return next;
