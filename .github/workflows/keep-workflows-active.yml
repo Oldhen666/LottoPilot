@@ -1,0 +1,30 @@
+# Public repos disable scheduled workflows after 60 days without a commit on the default branch.
+# This job pushes a timestamp twice a month so the draw scraper keeps its schedule.
+name: Keep scheduled workflows active
+
+on:
+  schedule:
+    - cron: '0 16 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record activity on main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          date -u +%Y-%m-%dT%H:%M:%SZ > .github/keepalive-timestamp
+          git add .github/keepalive-timestamp
+          git commit -m "chore: keep scheduled workflows active"
+          git push
+      - name: Re-enable draw scrape
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/scrape-draws.yml/enable"
