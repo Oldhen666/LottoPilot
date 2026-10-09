@@ -6,6 +6,7 @@
  */
 import React, { useRef, useEffect, useCallback } from 'react';
 import { View, TextInput, StyleSheet } from 'react-native';
+import { COLORS } from '../constants/theme';
 
 /** When user types only 1 digit, wait this long before advancing */
 const SINGLE_DIGIT_WAIT_MS = 2200;
@@ -79,7 +80,7 @@ export function MainNumbersBoxes({ count, minVal, maxVal, values, onChange, plac
           onChangeText={(t) => handleChange(i, t)}
           onKeyPress={(e) => handleKeyPress(i, e)}
           placeholder={i === 0 ? placeholder : ''}
-          placeholderTextColor="#94a3b8"
+          placeholderTextColor={COLORS.textMuted}
           keyboardType="number-pad"
           maxLength={maxDigits}
           selectTextOnFocus
@@ -96,15 +97,15 @@ const styles = StyleSheet.create({
     width: BOX_SIZE,
     height: BOX_SIZE,
     borderRadius: 10,
-    backgroundColor: '#152238',
+    backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: '#1e3254',
-    color: '#f8fafc',
+    borderColor: COLORS.bgElevated,
+    color: COLORS.text,
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
   },
-  boxFilled: { borderColor: '#4f46e5' },
+  boxFilled: { borderColor: COLORS.primary },
   /** Equal share of row width (e.g. PB/MM line: 5 mains + special = same cell width) */
   boxFlexFill: { flex: 1, width: undefined, minWidth: 0 },
 });

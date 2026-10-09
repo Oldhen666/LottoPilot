@@ -162,7 +162,7 @@ export default function PickEvaluationScreen() {
               onPress={() => setTrendPositionModalVisible(true)}
               activeOpacity={0.8}
             >
-              <Ionicons name="stats-chart-outline" size={18} color={COLORS.gold} />
+              <Ionicons name="stats-chart-outline" size={18} color={COLORS.onGold} />
               <Text style={styles.viewTpBtnText}>View trend & position score</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -174,7 +174,7 @@ export default function PickEvaluationScreen() {
               }
               activeOpacity={0.85}
             >
-              <Ionicons name="sparkles" size={18} color={COLORS.bg} />
+              <Ionicons name="sparkles" size={18} color={COLORS.onFill} />
               <Text style={styles.aiImproveBtnText}>Improve pick with AI Strategy Lab</Text>
             </TouchableOpacity>
           </View>
@@ -367,11 +367,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: COLORS.bgCard,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
+    backgroundColor: COLORS.gold,
   },
-  viewTpBtnText: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },
+  viewTpBtnText: { color: COLORS.onGold, fontSize: 14, fontWeight: '700' },
   aiImproveBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -381,11 +379,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
   },
-  aiImproveBtnText: { color: COLORS.bg, fontSize: 14, fontWeight: '700' },
+  aiImproveBtnText: { color: COLORS.onFill, fontSize: 14, fontWeight: '700' },
   scroll: { flex: 1 },
   scrollContent: {
     paddingHorizontal: SPACING.screenPadding,

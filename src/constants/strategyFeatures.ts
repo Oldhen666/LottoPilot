@@ -6,7 +6,7 @@
 export type FeatureCategory = 'structure' | 'position' | 'trend' | 'risk';
 
 export const FEATURE_CATEGORY_COLORS: Record<FeatureCategory, string> = {
-  structure: '#4f46e5', // indigo
+  structure: '#3f3f46', // gray
   position: '#10b981', // green
   trend: '#d4af37', // gold
   risk: '#f59e0b', // amber

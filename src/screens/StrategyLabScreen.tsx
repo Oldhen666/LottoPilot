@@ -83,7 +83,7 @@ import {
   computeRefineProposal,
   filterRefineDeltasForPlan,
 } from '../services/aiRefine';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import {
   STRATEGY_FEATURES,
   FEATURE_CATEGORY_COLORS,
@@ -101,13 +101,6 @@ import type { LotteryId } from '../types/lottery';
 import type { StrategySet, LuckyBiasStrength } from '../types/strategy';
 import type { CandidatePick } from '../utils/localAnalysis';
 
-const TUNING_CATEGORY_PANEL: Record<FeatureCategory, { bg: string; border: string }> = {
-  structure: { bg: 'rgba(79, 70, 229, 0.22)', border: 'rgba(79, 70, 229, 0.38)' },
-  position: { bg: 'rgba(16, 185, 129, 0.22)', border: 'rgba(16, 185, 129, 0.38)' },
-  trend: { bg: 'rgba(212, 175, 55, 0.24)', border: 'rgba(212, 175, 55, 0.45)' },
-  risk: { bg: 'rgba(245, 158, 11, 0.22)', border: 'rgba(245, 158, 11, 0.38)' },
-};
-
 function tuningCategoryTitle(cat: FeatureCategory): string {
   const head: Record<FeatureCategory, string> = {
     structure: 'Structure',
@@ -123,7 +116,6 @@ const REFINE_DATE_WHEEL_ROW_H = 48;
 const REFINE_DATE_WHEEL_HEIGHT = REFINE_DATE_WHEEL_ROW_H * 5;
 
 const PERSONAL_BIAS_ACCENT = '#a78bfa';
-const PERSONAL_BIAS_PANEL = { bg: 'rgba(167, 139, 250, 0.18)', border: 'rgba(167, 139, 250, 0.42)' };
 
 /** Single-line copy for the current lucky-bias tier only. */
 function luckyBiasIndicationLine(strength: LuckyBiasStrength | undefined): string {
@@ -160,7 +152,7 @@ const STRATEGY_LAB_YOUTUBE_URL = '';
 
 const STRATEGY_LAB_GUIDE_STEPS = [
   { icon: 'ticket' as const, title: 'Lottery & mode', text: 'In Manual, pick the lottery first—each game keeps its own saved weights locally. Auto Pilot is Astronaut-only and skips the weight panel for quicker generates.' },
-  { icon: 'flask' as const, title: 'Tuning', text: 'Weights are grouped by category (Structure, Position, Trend, Risk). Tap the gear for a bottom sheet with the slider and details; tap outside the sheet to save. Astronaut unlocks extra parameters on some categories.' },
+  { icon: 'flask' as const, title: 'Tuning', text: 'Weights are grouped by category (Structure, Position, Trend, Risk). Tap the value marker for a bottom sheet with the slider and details; tap outside the sheet to save. Astronaut unlocks extra parameters on some categories.' },
   { icon: 'heart' as const, title: 'Personal bias', text: 'Optional lucky digit (0–9) and bias strength (Off/Low/Medium/High). When on, nudges balanced picks toward main numbers whose ones digit matches. Personal preference only—does not change true odds.' },
   { icon: 'sparkles' as const, title: 'Generate Picks', text: 'Manual: choose lottery under Lottery first. Astronaut Auto Pilot: choose lottery in Generate Picks. Free Manual: every 2 successful generates, the next one requires a short ad or Astronaut plan.' },
   { icon: 'construct' as const, title: 'Generate & Refine', text: 'After each draw, compare your picks with actual results. Use Refine: pick a past draw date, enter or load your line, then compute. Suggests small weight adjustments (±5% max). Free Manual: every 2 successful Refines, the next requires a rewarded ad or Astronaut plan. Does not predict outcomes.' },
@@ -1283,7 +1275,7 @@ export default function StrategyLabScreen() {
       </TouchableOpacity>
       {lotteryDropdownOpen && (
         <View style={styles.lotteryDropdownMenu}>
-          {(Object.keys(LOTTERY_DEFS) as LotteryId[]).map((id, idx, arr) => (
+          {SUPPORTED_LOTTERY_IDS.map((id, idx, arr) => (
             <TouchableOpacity
               key={id}
               style={[
@@ -1366,16 +1358,11 @@ export default function StrategyLabScreen() {
     if (!activeSet) return null;
     const showHeader = opts?.showHeader !== false;
     return (
-      <View
-        style={[
-          styles.tuningCategoryPanel,
-          { backgroundColor: PERSONAL_BIAS_PANEL.bg, borderColor: PERSONAL_BIAS_PANEL.border },
-        ]}
-      >
+      <View style={styles.tuningCategoryPanel}>
         {showHeader ? (
           <View style={styles.tuningCategoryTitleRow}>
-            <Ionicons name="heart-outline" size={26} color={PERSONAL_BIAS_ACCENT} />
-            <Text style={[styles.tuningCategoryTitle, { color: PERSONAL_BIAS_ACCENT }]}>Personal Bias</Text>
+            <Ionicons name="heart-outline" size={26} color={COLORS.text} />
+            <Text style={styles.tuningCategoryTitle}>Personal Bias</Text>
           </View>
         ) : null}
 
@@ -1463,9 +1450,6 @@ export default function StrategyLabScreen() {
         <View style={styles.content}>
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Mode</Text>
-            <Text style={styles.cardDesc}>
-              Auto Pilot (Astronaut plan only) for quick picks. Manual for full control.
-            </Text>
             <View style={styles.modeToggleRow}>
               <TouchableOpacity
                 style={[
@@ -1487,7 +1471,7 @@ export default function StrategyLabScreen() {
                 <Ionicons
                   name={proUnlocked ? 'rocket-outline' : 'lock-closed-outline'}
                   size={16}
-                  color={mode === 'auto' && proUnlocked ? COLORS.bg : COLORS.gold}
+                  color={mode === 'auto' && proUnlocked ? COLORS.onFill : COLORS.text}
                 />
                 <Text style={[styles.modeToggleText, mode === 'auto' && proUnlocked && styles.modeToggleTextActive]}>
                   Auto Pilot
@@ -1498,7 +1482,7 @@ export default function StrategyLabScreen() {
                 onPress={() => setMode('manual')}
                 activeOpacity={0.85}
               >
-                <Ionicons name="hand-left-outline" size={16} color={mode === 'manual' ? COLORS.bg : COLORS.gold} />
+                <Ionicons name="hand-left-outline" size={16} color={mode === 'manual' ? COLORS.onFill : COLORS.text} />
                 <Text style={[styles.modeToggleText, mode === 'manual' && styles.modeToggleTextActive]}>Manual</Text>
               </TouchableOpacity>
             </View>
@@ -1565,26 +1549,19 @@ export default function StrategyLabScreen() {
             const features = STRATEGY_FEATURES.filter((f) => f.category === cat);
             if (features.length === 0) return null;
             const color = FEATURE_CATEGORY_COLORS[cat];
-            const panel = TUNING_CATEGORY_PANEL[cat];
             return (
-              <View
-                key={cat}
-                style={[
-                  styles.tuningCategoryPanel,
-                  { backgroundColor: panel.bg, borderColor: panel.border },
-                ]}
-              >
+              <View key={cat} style={styles.tuningCategoryPanel}>
                 <View style={styles.tuningCategoryTitleRow}>
                   {cat === 'position' ? (
-                    <Ionicons name="flask" size={26} color={COLORS.gold} />
+                    <Ionicons name="flask" size={26} color={COLORS.text} />
                   ) : cat === 'trend' ? (
-                    <Ionicons name="trending-up" size={26} color={COLORS.gold} />
+                    <Ionicons name="trending-up" size={26} color={COLORS.text} />
                   ) : cat === 'risk' ? (
-                    <MaterialCommunityIcons name="car-shift-pattern" size={26} color={COLORS.gold} />
+                    <MaterialCommunityIcons name="car-shift-pattern" size={26} color={COLORS.text} />
                   ) : (
-                    <Ionicons name="cog-outline" size={26} color={COLORS.gold} />
+                    <Ionicons name="cog-outline" size={26} color={COLORS.text} />
                   )}
-                  <Text style={[styles.tuningCategoryTitle, { color: COLORS.gold }]}>{tuningCategoryTitle(cat)}</Text>
+                  <Text style={styles.tuningCategoryTitle}>{tuningCategoryTitle(cat)}</Text>
                 </View>
                 {features.map((f, rowIdx) => {
                   const w = activeSet.featureWeights[f.id] ?? 0.5;
@@ -1654,10 +1631,10 @@ export default function StrategyLabScreen() {
           activeOpacity={0.7}
         >
           {loading ? (
-            <ActivityIndicator size="small" color={COLORS.text} />
+            <ActivityIndicator size="small" color={COLORS.onFill} />
           ) : (
             <>
-              <Ionicons name="sparkles" size={20} color={COLORS.text} style={styles.btnIcon} />
+              <Ionicons name="sparkles" size={20} color={COLORS.onFill} style={styles.btnIcon} />
               <Text style={styles.generateBtnText}>Generate Picks</Text>
             </>
           )}
@@ -1821,7 +1798,7 @@ export default function StrategyLabScreen() {
 
       <View style={styles.refineBtnRow}>
         <TouchableOpacity style={styles.refineBtn} onPress={() => setShowRefineModal(true)}>
-          <Ionicons name="construct" size={22} color={COLORS.text} style={styles.refineBtnIcon} />
+          <Ionicons name="construct" size={22} color={COLORS.onFill} style={styles.refineBtnIcon} />
           <Text style={styles.refineBtnText}>Refine Strategy</Text>
         </TouchableOpacity>
         {devUnlockRefine && (
@@ -2523,8 +2500,6 @@ const styles = StyleSheet.create({
     minHeight: 44,
     borderRadius: 12,
     backgroundColor: COLORS.bgElevated,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2532,27 +2507,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   modeToggleBtnActive: {
-    backgroundColor: COLORS.gold,
-    borderColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
   },
   modeToggleBtnLocked: {
     opacity: 0.72,
-    borderColor: COLORS.textMuted,
   },
   modeToggleText: {
-    color: COLORS.gold,
+    color: COLORS.text,
     fontSize: 14,
     fontWeight: '800',
   },
   modeToggleTextActive: {
-    color: COLORS.bg,
+    color: COLORS.onFill,
   },
   tuningCategoryPanel: {
     marginBottom: 22,
     paddingVertical: 16,
     paddingHorizontal: 16,
     borderRadius: 14,
-    borderWidth: 1,
+    backgroundColor: '#c4c4c4',
   },
   tuningCategoryTitleRow: {
     flexDirection: 'row',
@@ -2565,10 +2538,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.2,
     flexShrink: 1,
+    color: COLORS.text,
   },
   tuningFeatureRowDivider: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.1)',
+    borderTopColor: COLORS.bgElevated,
   },
   personalBiasFeatureBlock: {
     paddingVertical: 4,
@@ -2617,9 +2591,9 @@ const styles = StyleSheet.create({
   generateConfirmText: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 16 },
   generateConfirmActions: { flexDirection: 'row', gap: 12, marginBottom: 12 },
   generateConfirmBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: COLORS.bgElevated, alignItems: 'center' },
-  generateConfirmBtnPrimary: { backgroundColor: COLORS.gold },
+  generateConfirmBtnPrimary: { backgroundColor: COLORS.primary },
   generateConfirmBtnText: { color: COLORS.text, fontSize: 14, fontWeight: '600' },
-  generateConfirmBtnTextPrimary: { color: COLORS.bg, fontSize: 14, fontWeight: '700' },
+  generateConfirmBtnTextPrimary: { color: COLORS.onFill, fontSize: 14, fontWeight: '700' },
   generateConfirmUpgrade: { paddingVertical: 8, alignItems: 'center' },
   generateConfirmUpgradeText: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },
   editModalCard: {
@@ -2726,13 +2700,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   editModalConfirm: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
     marginBottom: 8,
   },
-  editModalConfirmText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
+  editModalConfirmText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   lotteryDropdownWrap: { marginBottom: 16, zIndex: 2 },
   lotteryDropdownTrigger: {
     flexDirection: 'row',
@@ -2803,7 +2777,7 @@ const styles = StyleSheet.create({
   },
   generateBtnDisabled: { opacity: 0.5 },
   btnIcon: { marginRight: 8 },
-  generateBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  generateBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   upgradeHint: { color: COLORS.warning, fontSize: 12, marginTop: 12 },
   refineBtnRow: {
     width: '100%',
@@ -2813,7 +2787,7 @@ const styles = StyleSheet.create({
   },
   refineDevHint: { color: COLORS.success, textAlign: 'center', marginTop: 10, alignSelf: 'stretch' },
   refineBtn: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     paddingVertical: 15,
     paddingHorizontal: 28,
     borderRadius: 14,
@@ -2825,7 +2799,7 @@ const styles = StyleSheet.create({
   },
   refineBtnDisabled: { opacity: 0.5 },
   refineBtnIcon: { marginRight: 10 },
-  refineBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 17 },
+  refineBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 17 },
   pickBookBtn: {
     backgroundColor: COLORS.bgElevated,
     padding: 14,
@@ -2934,7 +2908,7 @@ const styles = StyleSheet.create({
   ballRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   ball: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
   ballSpecial: { backgroundColor: COLORS.success },
-  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 12 },
+  ballText: { color: COLORS.onFill, fontWeight: '700', fontSize: 12 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalCard: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, width: '100%', maxWidth: 360, maxHeight: '85%', overflow: 'hidden' },
   refineSheetRoot: { flex: 1, justifyContent: 'flex-end' },
@@ -3061,7 +3035,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 1,
     right: 1,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     borderRadius: 4,
     opacity: 0.8,
   },
@@ -3175,22 +3149,21 @@ const styles = StyleSheet.create({
   strategyGateTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, marginBottom: 10 },
   strategyGateMsg: { color: COLORS.textSecondary, fontSize: 14, lineHeight: 22, marginBottom: 16 },
   strategyGatePrimary: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     borderRadius: 10,
     paddingVertical: 14,
     alignItems: 'center',
     marginBottom: 10,
   },
-  strategyGatePrimaryText: { color: COLORS.bg, fontSize: 16, fontWeight: '700' },
+  strategyGatePrimaryText: { color: COLORS.onFill, fontSize: 16, fontWeight: '700' },
   strategyGateSecondary: {
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
     marginBottom: 8,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
+    backgroundColor: COLORS.gold,
   },
-  strategyGateSecondaryText: { color: COLORS.gold, fontSize: 15, fontWeight: '600' },
+  strategyGateSecondaryText: { color: COLORS.onGold, fontSize: 15, fontWeight: '700' },
   strategyGateCancel: { paddingVertical: 10, alignItems: 'center' },
   strategyGateCancelText: { color: COLORS.textMuted, fontSize: 15 },
   refinePickBookList: { maxHeight: 280 },
@@ -3205,7 +3178,7 @@ const styles = StyleSheet.create({
   refinePickBookItemDate: { color: COLORS.gold, fontSize: 12, fontWeight: '600', marginBottom: 4 },
   refinePickBookItemNums: { color: COLORS.text, fontSize: 13 },
   refineSubmitBtn: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
@@ -3213,7 +3186,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
     marginBottom: 8,
   },
-  refineSubmitBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
+  refineSubmitBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   proposalScroll: { flexGrow: 1 },
   proposalScrollContent: { paddingBottom: 24, flexGrow: 1 },
   proposalSection: { color: COLORS.gold, fontSize: 12, fontWeight: '600', marginTop: 12, marginBottom: 8 },
@@ -3235,15 +3208,15 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginBottom: 16,
   },
-  confirmBtn: { backgroundColor: COLORS.gold, padding: 14, borderRadius: 12, alignItems: 'center', marginBottom: 24 },
-  confirmBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
+  confirmBtn: { backgroundColor: COLORS.primary, padding: 14, borderRadius: 12, alignItems: 'center', marginBottom: 24 },
+  confirmBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   cancelBtn: { alignItems: 'center' },
   cancelBtnText: { color: COLORS.textMuted, fontSize: 14 },
   paywallCard: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 24, width: '100%', maxWidth: 340 },
   paywallTitle: { fontSize: 20, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
   paywallDesc: { color: COLORS.textSecondary, fontSize: 14, marginBottom: 20 },
-  purchaseBtn: { backgroundColor: COLORS.gold, padding: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
-  purchaseBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 16 },
+  purchaseBtn: { backgroundColor: COLORS.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginBottom: 12 },
+  purchaseBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   guideModalCard: {
     backgroundColor: COLORS.bgCard,
     borderRadius: 16,
@@ -3306,12 +3279,12 @@ const styles = StyleSheet.create({
   },
   guideDisclaimerText: { color: COLORS.textMuted, fontSize: 12, flex: 1, lineHeight: 18 },
   guideCloseBtn: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     padding: 14,
     borderRadius: 12,
     alignItems: 'center',
   },
-  guideCloseBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
+  guideCloseBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   compassModalCard: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, width: '100%', maxWidth: 360, maxHeight: '80%' },
   compassModalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 10 },
   compassModalTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text, flex: 1 },
@@ -3321,6 +3294,6 @@ const styles = StyleSheet.create({
   compassPosLabel: { color: COLORS.textSecondary, fontSize: 12, width: 48 },
   compassPosBalls: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1 },
   compassBall: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
-  compassBallText: { color: COLORS.text, fontWeight: '600', fontSize: 11 },
+  compassBallText: { color: COLORS.onFill, fontWeight: '600', fontSize: 11 },
   compassInsufficient: { color: COLORS.warning, fontSize: 14, paddingVertical: 24 },
 });

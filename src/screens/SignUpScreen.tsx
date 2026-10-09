@@ -157,7 +157,7 @@ export default function SignUpScreen({ onSuccess, onGoToLogin }: Props) {
           >
             {loading ? (
               <>
-                <ActivityIndicator size="small" color={COLORS.bg} style={styles.btnSpinner} />
+                <ActivityIndicator size="small" color={COLORS.onFill} style={styles.btnSpinner} />
                 <Text style={styles.primaryBtnText}>Creating account...</Text>
               </>
             ) : (
@@ -211,7 +211,7 @@ const styles = StyleSheet.create({
   errorText: { color: COLORS.error, fontSize: 14, marginTop: 12 },
   primaryBtn: {
     flexDirection: 'row',
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
@@ -220,7 +220,7 @@ const styles = StyleSheet.create({
   },
   btnSpinner: { marginRight: 10 },
   primaryBtnDisabled: { opacity: 0.7 },
-  primaryBtnText: { color: COLORS.bg, fontSize: 16, fontWeight: '700' },
+  primaryBtnText: { color: COLORS.onFill, fontSize: 16, fontWeight: '700' },
   footer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 24, gap: 8 },
   footerText: { color: COLORS.textSecondary, fontSize: 14 },
   footerLink: { color: COLORS.gold, fontSize: 14, fontWeight: '600' },

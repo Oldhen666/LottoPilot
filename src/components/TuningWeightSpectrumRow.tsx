@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, type LayoutChangeEvent } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../constants/theme';
 import {
   COMMON_PENALTY_LEVEL_MAX,
@@ -183,25 +183,17 @@ export function TuningWeightSpectrumRow({
         <Text style={styles.title} numberOfLines={2}>
           {formatTitle(feature.label)}
         </Text>
-        <TouchableOpacity
-          style={styles.gearBtnTitle}
-          onPress={() => (locked ? onPaywall() : onOpenSheet())}
-          accessibilityRole="button"
-          accessibilityLabel={locked ? `${feature.label} locked` : `Adjust ${feature.label}`}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          {locked ? (
+        {locked ? (
+          <TouchableOpacity
+            style={styles.gearBtnTitle}
+            onPress={onPaywall}
+            accessibilityRole="button"
+            accessibilityLabel={`${feature.label} locked`}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
             <Ionicons name="lock-closed" size={22} color={COLORS.textMuted} />
-          ) : isPosition ? (
-            <Ionicons name="flask" size={24} color={COLORS.gold} />
-          ) : isTrend ? (
-            <Ionicons name="trending-up" size={24} color={COLORS.gold} />
-          ) : isCommonPenalty ? (
-            <MaterialCommunityIcons name="car-shift-pattern" size={24} color={COLORS.gold} />
-          ) : (
-            <Ionicons name="cog-outline" size={24} color={COLORS.gold} />
-          )}
-        </TouchableOpacity>
+          </TouchableOpacity>
+        ) : null}
       </View>
       <Text style={[styles.valueIndication, locked && styles.muted]}>
         {locked ? (
@@ -271,18 +263,22 @@ export function TuningWeightSpectrumRow({
               </View>
               <View style={styles.pointerRow}>
                 {!locked ? (
-                  <View
-                    style={[
-                      styles.pointerCluster,
-                      {
-                        left: `${(commonLevel / COMMON_PENALTY_LEVEL_MAX) * 100}%`,
-                        marginLeft: -20,
-                      },
-                    ]}
-                  >
-                    <Ionicons name="chevron-up" size={14} color={accentColor} style={styles.pointerArrow} />
-                    <Text style={[styles.pointerValue, { color: accentColor }]}>{commonLevel}</Text>
-                  </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.pointerCluster,
+                        {
+                          left: `${(commonLevel / COMMON_PENALTY_LEVEL_MAX) * 100}%`,
+                          marginLeft: -20,
+                        },
+                      ]}
+                      onPress={onOpenSheet}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Adjust ${feature.label}`}
+                      hitSlop={{ top: 8, bottom: 6, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="chevron-up" size={14} color={accentColor} style={styles.pointerArrow} />
+                      <Text style={[styles.pointerValue, { color: accentColor }]}>{commonLevel}</Text>
+                    </TouchableOpacity>
                 ) : null}
               </View>
             </View>
@@ -308,7 +304,7 @@ export function TuningWeightSpectrumRow({
                 <View style={[styles.tick, styles.tickMid]} />
                 <View style={[styles.tick, styles.tickRight]} />
                 {!locked ? (
-                  <View
+                  <TouchableOpacity
                     style={[
                       styles.thumb,
                       {
@@ -317,12 +313,16 @@ export function TuningWeightSpectrumRow({
                         backgroundColor: trackAccent,
                       },
                     ]}
+                    onPress={onOpenSheet}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Adjust ${feature.label}`}
+                    hitSlop={{ top: 14, bottom: 10, left: 14, right: 14 }}
                   />
                 ) : null}
               </View>
               <View style={styles.pointerRow}>
                 {!locked ? (
-                  <View
+                  <TouchableOpacity
                     style={[
                       styles.pointerCluster,
                       {
@@ -330,10 +330,14 @@ export function TuningWeightSpectrumRow({
                         marginLeft: -20,
                       },
                     ]}
+                    onPress={onOpenSheet}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Adjust ${feature.label}`}
+                    hitSlop={{ top: 8, bottom: 6, left: 8, right: 8 }}
                   >
                     <Ionicons name="chevron-up" size={14} color={trackAccent} style={styles.pointerArrow} />
                     <Text style={[styles.pointerValue, { color: trackAccent }]}>{pct}</Text>
-                  </View>
+                  </TouchableOpacity>
                 ) : null}
               </View>
             </View>
@@ -436,7 +440,7 @@ const styles = StyleSheet.create({
     marginTop: -1,
     height: 2,
     borderRadius: 1,
-    backgroundColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: '#ffffff',
   },
   tick: {
     position: 'absolute',
@@ -499,7 +503,7 @@ const styles = StyleSheet.create({
     marginTop: -1,
     height: 2,
     borderRadius: 1,
-    backgroundColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: '#ffffff',
   },
   gearDotsRow: {
     flexDirection: 'row',

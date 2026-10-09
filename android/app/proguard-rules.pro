@@ -15,5 +15,10 @@
 
 # ML Kit text recognition (only applies when android.enableMinifyInReleaseBuilds=true)
 -keep class com.google.mlkit.** { *; }
--keep class com.google.android.gms.** { *; }
 -keep class expo.modules.mlkitocr.** { *; }
+
+# Ads, billing, and document scan use reflection / JNI entry points.
+-keep class io.invertase.googlemobileads.** { *; }
+-keep class com.android.billingclient.** { *; }
+-keep class com.margelo.nitro.iap.** { *; }
+-keep class com.reactnativedocumentscanner.** { *; }

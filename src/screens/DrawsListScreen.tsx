@@ -84,7 +84,7 @@ export default function DrawsListScreen({ lotteryId, onBack }: Props) {
       obj[d.draw_date] = { marked: true, dotColor: COLORS.gold };
     }
     if (datePickerIso) {
-      obj[datePickerIso] = { ...(obj[datePickerIso] ?? {}), selected: true, selectedColor: COLORS.primary };
+      obj[datePickerIso] = { ...(obj[datePickerIso] ?? {}), selected: true, selectedColor: COLORS.primary, selectedTextColor: COLORS.onFill };
     }
     return obj;
   }, [draws, datePickerIso]);
@@ -105,7 +105,7 @@ export default function DrawsListScreen({ lotteryId, onBack }: Props) {
             <Text style={styles.error}>{error}</Text>
             <Text style={styles.errorHint}>Ensure EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are in .env, then restart dev server.</Text>
             <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
-              <Ionicons name="refresh" size={18} color={COLORS.text} />
+              <Ionicons name="refresh" size={18} color={COLORS.onFill} />
               <Text style={styles.refreshBtnText}>Retry</Text>
             </TouchableOpacity>
           </View>
@@ -114,7 +114,7 @@ export default function DrawsListScreen({ lotteryId, onBack }: Props) {
             <Text style={styles.empty}>No draws yet</Text>
             <Text style={styles.emptyHint}>Tap Refresh to sync from Supabase. If empty, run: npm run scrape</Text>
             <TouchableOpacity style={styles.refreshBtn} onPress={onRefresh} disabled={loading}>
-              <Ionicons name="refresh" size={18} color={COLORS.text} />
+              <Ionicons name="refresh" size={18} color={COLORS.onFill} />
               <Text style={styles.refreshBtnText}>Refresh from Supabase</Text>
             </TouchableOpacity>
           </View>
@@ -195,7 +195,7 @@ export default function DrawsListScreen({ lotteryId, onBack }: Props) {
                   monthTextColor: COLORS.text,
                   arrowColor: COLORS.gold,
                   todayTextColor: COLORS.gold,
-                  selectedDayTextColor: COLORS.text,
+                  selectedDayTextColor: COLORS.onFill,
                   dotColor: COLORS.gold,
                   selectedDotColor: COLORS.text,
                 }}
@@ -255,7 +255,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     gap: 8,
   },
-  refreshBtnText: { color: COLORS.text, fontWeight: '600' },
+  refreshBtnText: { color: COLORS.onFill, fontWeight: '600' },
   refreshBtnSmall: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -279,7 +279,7 @@ const styles = StyleSheet.create({
   datePickerAdWrap: { marginTop: 10 },
   datePickerAdSlot: { marginVertical: 0 },
   datePickerDone: { marginTop: 10, backgroundColor: COLORS.primary, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
-  datePickerDoneText: { color: COLORS.text, fontWeight: '700' },
+  datePickerDoneText: { color: COLORS.onFill, fontWeight: '700' },
   list: { paddingBottom: 40 },
   card: {
     backgroundColor: COLORS.bgCard,
@@ -300,5 +300,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ballSpecial: { backgroundColor: COLORS.success },
-  ballText: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
+  ballText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
 });

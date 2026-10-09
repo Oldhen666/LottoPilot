@@ -17,7 +17,7 @@ import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, SPACING } from '../constants/theme';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { getEntitlements, type UserPlan } from '../services/entitlements';
 import {
   requiresRewardedAdGate,
@@ -53,7 +53,7 @@ import {
 } from '../compass/pickInsightStars';
 import { InsightStarRow } from '../components/InsightStarRow';
 
-const COMPASS_LOTTERIES: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+const COMPASS_LOTTERIES: readonly LotteryId[] = SUPPORTED_LOTTERY_IDS;
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function CompassScreen() {
@@ -561,11 +561,11 @@ type PendingPickInsight =
 function pickTierChipStyles(tier: PositionTier) {
   switch (tier) {
     case 'top':
-      return { border: COLORS.success, bg: COLORS.success, text: COLORS.bg };
+      return { border: COLORS.success, bg: COLORS.success, text: COLORS.onGold };
     case 'mid':
-      return { border: COLORS.warning, bg: COLORS.warning, text: COLORS.bg };
+      return { border: COLORS.warning, bg: COLORS.warning, text: COLORS.onGold };
     default:
-      return { border: COLORS.error, bg: COLORS.error, text: COLORS.bg };
+      return { border: COLORS.error, bg: COLORS.error, text: COLORS.onGold };
   }
 }
 
@@ -994,7 +994,7 @@ function PickSlots({
                           }
                           activeOpacity={0.8}
                         >
-                          <Text style={[styles.pickChoiceChipText, { color: isBest ? COLORS.bg : cs.text }]}>{n}</Text>
+                          <Text style={[styles.pickChoiceChipText, { color: isBest ? COLORS.onGold : cs.text }]}>{n}</Text>
                         </AnimatedTouchableOpacity>
                       );
                     })}
@@ -1069,7 +1069,7 @@ function PickSlots({
                 onPress={onPickEvaluation}
                 disabled={!canEvaluatePick}
               >
-                <Ionicons name="analytics-outline" size={18} color={COLORS.gold} style={styles.generateIcon} />
+                <Ionicons name="analytics-outline" size={18} color={COLORS.onGold} style={styles.generateIcon} />
                 <Text style={styles.evaluateBtnText} numberOfLines={2}>
                   {pickEvaluationMode === 'view' ? 'View evaluation' : 'Evaluate current pick'}
                 </Text>
@@ -1080,10 +1080,10 @@ function PickSlots({
                 disabled={!canGenerate}
               >
                 {generating ? (
-                  <ActivityIndicator size="small" color={COLORS.gold} />
+                  <ActivityIndicator size="small" color={COLORS.onFill} />
                 ) : (
                   <>
-                    <Ionicons name="sparkles" size={18} color={COLORS.gold} style={styles.generateIcon} />
+                    <Ionicons name="sparkles" size={18} color={COLORS.onFill} style={styles.generateIcon} />
                     <Text style={styles.generateBtnText} numberOfLines={2}>
                       Smart generate
                     </Text>
@@ -1274,15 +1274,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 10,
-    backgroundColor: COLORS.bgCard,
-    borderWidth: 1,
-    borderColor: COLORS.gray700,
+    backgroundColor: COLORS.gold,
     minHeight: 44,
   },
   evaluateBtnText: {
-    color: COLORS.gold,
+    color: COLORS.onGold,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -1293,9 +1291,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 10,
-    backgroundColor: COLORS.bgCard,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     minHeight: 44,
   },
   generateBtnFlex: { flex: 1 },
@@ -1327,12 +1323,12 @@ const styles = StyleSheet.create({
   pickInsightDoneBtn: {
     paddingVertical: 14,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
   },
-  pickInsightDoneText: { color: COLORS.bg, fontSize: 16, fontWeight: '700' },
+  pickInsightDoneText: { color: COLORS.onFill, fontSize: 16, fontWeight: '700' },
   generateIcon: { marginRight: 6 },
-  generateBtnText: { color: COLORS.gold, fontSize: 13, fontWeight: '600', textAlign: 'center', flexShrink: 1 },
+  generateBtnText: { color: COLORS.onFill, fontSize: 13, fontWeight: '700', textAlign: 'center', flexShrink: 1 },
   resetBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1394,23 +1390,21 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 10,
-    backgroundColor: COLORS.bgElevated,
-    borderWidth: 1,
-    borderColor: COLORS.gray700,
+    backgroundColor: COLORS.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  adGateWatchAdText: { color: COLORS.text, fontSize: 14, fontWeight: '600', textAlign: 'center' },
+  adGateWatchAdText: { color: COLORS.onGold, fontSize: 14, fontWeight: '700', textAlign: 'center' },
   adGateUpgradePirateBtn: {
     minHeight: 48,
     paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  adGateUpgradePirateText: { color: COLORS.bg, fontSize: 15, fontWeight: '700', textAlign: 'center' },
+  adGateUpgradePirateText: { color: COLORS.onFill, fontSize: 15, fontWeight: '700', textAlign: 'center' },
   loadingBox: { alignItems: 'center', paddingVertical: 48 },
   loadingText: { color: COLORS.textMuted, marginTop: 12 },
   warnBox: {
@@ -1475,10 +1469,10 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     alignItems: 'center',
   },
-  guideCloseBtnText: { color: COLORS.bg, fontSize: 15, fontWeight: '700' },
+  guideCloseBtnText: { color: COLORS.onFill, fontSize: 15, fontWeight: '700' },
   generateModalContent: {
     backgroundColor: COLORS.bgCard,
     borderRadius: 16,
@@ -1515,10 +1509,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 20,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     flex: 1,
     minWidth: 100,
     alignItems: 'center',
   },
-  generateConfirmText: { color: COLORS.bg, fontSize: 14, fontWeight: '700' },
+  generateConfirmText: { color: COLORS.onFill, fontSize: 14, fontWeight: '700' },
 });

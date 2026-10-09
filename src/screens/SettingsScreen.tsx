@@ -6,20 +6,14 @@ import { useNavigation } from '@react-navigation/native';
 import { COLORS, SPACING } from '../constants/theme';
 import { getCurrentUserEmail, onAuthStateChange, signOut } from '../services/supabase';
 import { getEntitlements, setProUnlocked, setCompassUnlocked, setHadAstronautSubscription as setHadAstronautEntitlement, revokeAstronautSubscription, syncLocalEntitlementsToServer, clearUserRevokedAstronautFlag, onEntitlementsChange, notifyEntitlementsChange, PLAN_LABELS, type UserPlan } from '../services/entitlements';
-import { isIAPAvailable, purchasePirate, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatPiratePrice, formatAstronautRenewalPrice, openSubscriptionManagement } from '../services/iap';
-import { SubscriptionLegalText } from '../components/SubscriptionLegalText';
-import {
-  astronautPaidOnlyDisclosureLines,
-  astronautTrialDisclosureLines,
-  pirateOneTimeDisclosureLines,
-} from '../constants/subscriptionLegal';
+import { isIAPAvailable, purchasePirate, purchaseAstronaut, restoreIAPPurchases, onPurchaseSuccess, getIAPProducts, formatAstronautRenewalPrice, openSubscriptionManagement } from '../services/iap';
 import {
   DISCLAIMER_SHORT,
   DISCLAIMER_SUBSCRIPTION,
   DISCLAIMER_PRIZE_VERIFY,
   DATA_SOURCE_NOTICE,
 } from '../constants/disclaimers';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { useJurisdiction } from '../hooks/useJurisdiction';
 import { CA_PROVINCES, US_STATES } from '../constants/jurisdictions';
 import { BannerAdPlaceholder } from '../components/BannerAdPlaceholder';
@@ -37,7 +31,6 @@ export default function SettingsScreen() {
   const [disclaimerModalVisible, setDisclaimerModalVisible] = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [findDifficultyModalVisible, setFindDifficultyModalVisible] = useState(false);
-  const [piratePrice, setPiratePrice] = useState('US$3.49');
   const [astronautRenewalPrice, setAstronautRenewalPrice] = useState('$0.99/month');
   const [cancelSubModalVisible, setCancelSubModalVisible] = useState(false);
   const [cancelSubReason, setCancelSubReason] = useState<string | null>(null);
@@ -60,13 +53,11 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     if (isIAPAvailable()) {
-      getIAPProducts().then(({ pirate, astronaut }) => {
-        const country = jurisdiction?.country === 'CA' ? 'CA' : jurisdiction?.country === 'US' ? 'US' : null;
-        setPiratePrice(formatPiratePrice(pirate, country));
+      getIAPProducts().then(({ astronaut }) => {
         setAstronautRenewalPrice(formatAstronautRenewalPrice(astronaut));
       });
     }
-  }, [jurisdiction?.country]);
+  }, []);
 
   useEffect(() => {
     const unsub = onPurchaseSuccess(() => {
@@ -277,7 +268,7 @@ export default function SettingsScreen() {
           <>
             <Text style={styles.cardDesc}>Sign in to sync your check records across devices.</Text>
             <TouchableOpacity style={styles.signInBtn} onPress={() => navigation.navigate('Login')}>
-              <Ionicons name="log-in-outline" size={20} color={COLORS.gold} style={styles.logOffIcon} />
+              <Ionicons name="log-in-outline" size={20} color={COLORS.onFill} style={styles.logOffIcon} />
               <Text style={styles.signInBtnText}>Sign in</Text>
             </TouchableOpacity>
           </>
@@ -306,12 +297,9 @@ export default function SettingsScreen() {
               One-time purchase: unlimited Compass picks, ad-free in Compass only. Does not include Strategy Lab.
             </Text>
             {plan === 'free' && (
-              <>
-                <SubscriptionLegalText lines={pirateOneTimeDisclosureLines(piratePrice)} compact />
-                <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradePirate}>
-                  <Text style={styles.planUpgradeBtnText}>Buy Pirate Plan ({piratePrice})</Text>
-                </TouchableOpacity>
-              </>
+              <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradePirate}>
+                <Text style={styles.planUpgradeBtnText}>Buy Pirate Plan</Text>
+              </TouchableOpacity>
             )}
           </View>
         )}
@@ -322,25 +310,14 @@ export default function SettingsScreen() {
               {(plan === 'astronaut' || plan === 'pirate_astronaut') && <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />}
             </View>
             <Text style={styles.planDesc}>
-              Monthly subscription: Strategy Lab (Generate, Refine, Auto Pilot), ad-free in Strategy Lab. Does not include
-              Compass — buy Pirate Plan separately for ad-free Compass.
+              Monthly subscription: Strategy Lab (Generate, Refine, Auto Pilot), ad-free in Strategy Lab.
             </Text>
             {(plan === 'free' || plan === 'pirate') && (
-              <>
-                <SubscriptionLegalText
-                  lines={
-                    hadAstronautSubscription
-                      ? astronautPaidOnlyDisclosureLines(astronautRenewalPrice)
-                      : astronautTrialDisclosureLines(astronautRenewalPrice)
-                  }
-                  compact
-                />
-                <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradeAstronaut}>
-                  <Text style={styles.planUpgradeBtnText}>
-                    {hadAstronautSubscription ? `Subscribe (${astronautRenewalPrice})` : 'Start 1-month free trial'}
-                  </Text>
-                </TouchableOpacity>
-              </>
+              <TouchableOpacity style={styles.planUpgradeBtn} onPress={handleUpgradeAstronaut}>
+                <Text style={styles.planUpgradeBtnText}>
+                  {hadAstronautSubscription ? `Subscribe (${astronautRenewalPrice})` : 'Start 1-month free trial'}
+                </Text>
+              </TouchableOpacity>
             )}
           </View>
         )}
@@ -383,12 +360,15 @@ export default function SettingsScreen() {
         <Text style={styles.cardDesc}>Check history is stored locally. If you sign in, records may sync for backup. We do not sell your data.</Text>
         <Text style={styles.cardDesc}>{DATA_SOURCE_NOTICE}</Text>
         <Text style={styles.linkLabel}>Official lottery links</Text>
-        {Object.values(LOTTERY_DEFS).map((l) => (
+        {SUPPORTED_LOTTERY_IDS.map((id) => {
+          const l = LOTTERY_DEFS[id];
+          return (
           <TouchableOpacity key={l.id} onPress={() => Linking.openURL(l.source_url)} style={styles.linkRow}>
             <Text style={styles.link}>{l.name}</Text>
             <Ionicons name="open-outline" size={18} color={COLORS.gold} />
           </TouchableOpacity>
-        ))}
+          );
+        })}
       </View>
 
       {/* Legal */}
@@ -438,16 +418,16 @@ export default function SettingsScreen() {
             <Text style={styles.modalTitle}>Select region</Text>
             <View style={styles.modalRow}>
               <TouchableOpacity style={[styles.modalTab, overrideCountry === 'CA' && styles.modalTabActive]} onPress={() => { setOverrideCountry('CA'); setOverrideRegion('ON'); }}>
-                <Text style={styles.modalTabText}>Canada</Text>
+                <Text style={[styles.modalTabText, overrideCountry === 'CA' && styles.modalTabTextActive]}>Canada</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.modalTab, overrideCountry === 'US' && styles.modalTabActive]} onPress={() => { setOverrideCountry('US'); setOverrideRegion('CA'); }}>
-                <Text style={styles.modalTabText}>USA</Text>
+                <Text style={[styles.modalTabText, overrideCountry === 'US' && styles.modalTabTextActive]}>USA</Text>
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.regionList}>
               {regionOptions.map(([code, name]) => (
                 <TouchableOpacity key={code} style={[styles.regionItem, overrideRegion === code && styles.regionItemActive]} onPress={() => setOverrideRegion(code)}>
-                  <Text style={styles.regionItemText}>{name} ({code})</Text>
+                  <Text style={[styles.regionItemText, overrideRegion === code && styles.regionItemTextActive]}>{name} ({code})</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -547,8 +527,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     backgroundColor: COLORS.bgElevated,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.gray700,
   },
   logOffIcon: { marginRight: 8 },
   logOffBtnText: { color: COLORS.text, fontSize: 15, fontWeight: '600' },
@@ -559,12 +537,10 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: COLORS.bgElevated,
+    backgroundColor: COLORS.primary,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
   },
-  signInBtnText: { color: COLORS.gold, fontSize: 15, fontWeight: '600' },
+  signInBtnText: { color: COLORS.onFill, fontSize: 15, fontWeight: '700' },
   sectionTitle: { color: COLORS.textMuted, fontSize: 12, marginTop: 16, marginBottom: 8, textTransform: 'uppercase' },
   linkLabel: { color: COLORS.textSecondary, fontSize: 13, marginTop: 8, marginBottom: 6 },
   linkRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 },
@@ -591,13 +567,13 @@ const styles = StyleSheet.create({
   planName: { color: COLORS.text, fontSize: 16, fontWeight: '700' },
   planDesc: { color: COLORS.textSecondary, fontSize: 13, marginTop: 6, lineHeight: 20 },
   planUpgradeBtn: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
     padding: 12,
     borderRadius: 10,
     alignItems: 'center',
     marginTop: 12,
   },
-  planUpgradeBtnText: { color: COLORS.bg, fontWeight: '700', fontSize: 14 },
+  planUpgradeBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 14 },
   cancelSubBtn: {
     marginTop: 16,
     paddingVertical: 12,
@@ -644,12 +620,14 @@ const styles = StyleSheet.create({
   modalTab: { flex: 1, padding: 12, borderRadius: 10, backgroundColor: COLORS.bgElevated, alignItems: 'center' },
   modalTabActive: { backgroundColor: COLORS.primary },
   modalTabText: { color: COLORS.text, fontSize: 16 },
+  modalTabTextActive: { color: COLORS.onFill },
   regionList: { maxHeight: 200, marginBottom: 16 },
   regionItem: { padding: 12, borderRadius: 8, marginBottom: 4 },
   regionItemActive: { backgroundColor: COLORS.primary },
   regionItemText: { color: COLORS.text, fontSize: 14 },
-  modalConfirm: { backgroundColor: COLORS.gold, padding: 14, borderRadius: 10, alignItems: 'center' },
-  modalConfirmText: { color: COLORS.bg, fontWeight: '700', fontSize: 16 },
+  regionItemTextActive: { color: COLORS.onFill },
+  modalConfirm: { backgroundColor: COLORS.primary, padding: 14, borderRadius: 10, alignItems: 'center' },
+  modalConfirmText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   disclaimerModalContent: { backgroundColor: COLORS.bgCard, borderRadius: 16, padding: 20, maxHeight: '80%', alignSelf: 'stretch' },
   disclaimerScroll: { maxHeight: 320, marginBottom: 16 },
   disclaimerBlockTitle: { color: COLORS.text, fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 6 },

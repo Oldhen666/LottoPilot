@@ -103,7 +103,7 @@ serve(async (req) => {
 
 function getLotteryRules(id: string): { main: number; mainMax: number; specialMax: number } {
   const rules: Record<string, { main: number; mainMax: number; specialMax: number }> = {
-    lotto_max: { main: 7, mainMax: 49, specialMax: 49 },
+    lotto_max: { main: 7, mainMax: 52, specialMax: 52 },
     lotto_649: { main: 6, mainMax: 49, specialMax: 49 },
     powerball: { main: 5, mainMax: 69, specialMax: 26 },
     mega_millions: { main: 5, mainMax: 70, specialMax: 25 },

@@ -44,7 +44,7 @@ SYSTD 4605
     const r: MlKitResult = { text };
     const parsed = parseMlKitResultToTicket(r, {
       mainCount: 7,
-      mainMax: 50,
+      mainMax: 52,
       specialMax: 0,
       specialCount: 0,
       lotteryId: 'lotto_max',
@@ -63,13 +63,13 @@ SYSTD 4605
     const r: MlKitResult = { text: '19 21 23 25 39 40 50\n08 11 15 21 40 44 46\n06 10 13 28 29 34 48' };
     const parsed = parseMlKitResultToTicket(r, {
       mainCount: 7,
-      mainMax: 50,
+      mainMax: 52,
       specialMax: 0,
       specialCount: 0,
       lotteryId: 'lotto_max',
       playsPerTicket: 3,
     });
-    const s = scoreParsedTicket(parsed, 7, 50, { lotteryId: 'lotto_max' });
+    const s = scoreParsedTicket(parsed, 7, 52, { lotteryId: 'lotto_max' });
     expect(s).toBeGreaterThan(0);
   });
 
@@ -95,7 +95,7 @@ Ticket No. Billet
     const r: MlKitResult = { text };
     const parsed = parseMlKitResultToTicket(r, {
       mainCount: 7,
-      mainMax: 50,
+      mainMax: 52,
       specialMax: 0,
       specialCount: 0,
       lotteryId: 'lotto_max',
@@ -121,7 +121,7 @@ eytra
     const r: MlKitResult = { text };
     const parsed = parseMlKitResultToTicket(r, {
       mainCount: 7,
-      mainMax: 50,
+      mainMax: 52,
       specialMax: 0,
       specialCount: 0,
       lotteryId: 'lotto_max',

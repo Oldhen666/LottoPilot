@@ -37,6 +37,7 @@ import type { CheckRecord } from './src/db/sqlite';
 
 import type { LotteryId } from './src/types/lottery';
 import { getLastHomeLottery, setLastHomeLottery } from './src/services/homeLotteryStorage';
+import { maybeRequestPlayReview, recordAppOpen } from './src/services/playReview';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -303,6 +304,12 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    void recordAppOpen();
+    void maybeRequestPlayReview();
+  }, []);
+
+  useEffect(() => {
     if (Platform.OS === 'web') return;
     try {
       const mobileAds = require('react-native-google-mobile-ads').default;
@@ -399,7 +406,7 @@ function AppContent() {
 
   return (
     <>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.bg} />
       <NavigationContainer ref={navigationRef}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="MainTabs" component={MainTabs} />

@@ -387,5 +387,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  doneBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  doneBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
 });

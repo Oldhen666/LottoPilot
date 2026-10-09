@@ -54,10 +54,10 @@ export function RewardedAdGateModal({ visible, onAdCompleted, onCancel }: Props)
               disabled={loading}
             >
               {loading ? (
-                <ActivityIndicator size="small" color={COLORS.bg} />
+                <ActivityIndicator size="small" color={COLORS.onFill} />
               ) : (
                 <>
-                  <Ionicons name="play-circle" size={20} color={COLORS.bg} style={styles.watchIcon} />
+                  <Ionicons name="play-circle" size={20} color={COLORS.onFill} style={styles.watchIcon} />
                   <Text style={styles.watchText}>Watch Ad</Text>
                 </>
               )}
@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 10,
-    backgroundColor: COLORS.gold,
+    backgroundColor: COLORS.primary,
   },
   watchBtnDisabled: {
     opacity: 0.7,
@@ -127,7 +127,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   watchText: {
-    color: COLORS.bg,
+    color: COLORS.onFill,
     fontSize: 14,
     fontWeight: '700',
   },

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -24,7 +24,8 @@ import { COLORS, SPACING } from '../constants/theme';
 import * as ImagePicker from 'expo-image-picker';
 import { useDraws, invalidateDrawsCache } from '../hooks/useDraws';
 import { fetchDrawByDate, resolveDrawExtraNumber } from '../services/supabase';
-import { LOTTERY_DEFS } from '../constants/lotteries';
+import { maybeRequestPlayReview, recordCompletedScan } from '../services/playReview';
+import { LOTTERY_DEFS, SUPPORTED_LOTTERY_IDS } from '../constants/lotteries';
 import { PRIZE_EXPLANATIONS } from '../constants/prizeExplanations';
 import { checkTicket } from '../utils/check';
 import { insertRecord, getRecordById } from '../db/sqlite';
@@ -81,7 +82,7 @@ function schemaForOrphanIndependentAddOn(
   return { digits: 7 };
 }
 
-const LOTTERY_IDS: LotteryId[] = ['lotto_max', 'lotto_649', 'powerball', 'mega_millions'];
+const LOTTERY_IDS: readonly LotteryId[] = SUPPORTED_LOTTERY_IDS;
 const MIN_FLEX_LINES = 3;
 const MAX_UI_LINES = 10;
 const MAX_OCR_PLAYS_PB_MM = MAX_UI_LINES;
@@ -275,6 +276,12 @@ export default function CheckTicketScreen({
     if (initialRecordId) return;
     resetScanState();
   }, [resetNonce, initialRecordId, resetScanState]);
+
+  useLayoutEffect(() => {
+    if (!resetNonce) return;
+    if (initialRecordId) return;
+    checkScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [resetNonce, initialRecordId]);
 
   // Keep PB/MM specialByLine aligned with current UI line count.
   useEffect(() => {
@@ -705,7 +712,9 @@ export default function CheckTicketScreen({
 
   const processImageUri = async (uri: string, sourceOpts?: { fromDocumentScan?: boolean }) => {
     setOcrReading(true);
+    let scanCompleted = false;
     try {
+      scanCompleted = true;
       setImageUri(uri);
 
       const def = LOTTERY_DEFS[lotteryId];
@@ -938,9 +947,13 @@ export default function CheckTicketScreen({
         scrollToNumbersSection();
       }
     } catch {
+      scanCompleted = false;
       setDateStatusMsg('Scan processing failed or timed out. Please try again or enter numbers manually.');
     } finally {
       setOcrReading(false);
+      if (scanCompleted && sourceOpts?.fromDocumentScan) {
+        void recordCompletedScan().then(() => maybeRequestPlayReview());
+      }
     }
   };
 
@@ -1138,7 +1151,7 @@ export default function CheckTicketScreen({
 
       <Text style={styles.label}>Draw date{lotteryId === 'powerball' ? ' (Mon/Wed/Sat)' : lotteryId === 'mega_millions' ? ' (Tue/Fri)' : ''} · Pull down to refresh</Text>
       {loading ? (
-        <ActivityIndicator size="small" color="#6366f1" />
+        <ActivityIndicator size="small" color={COLORS.primary} />
       ) : (
         <ScrollView ref={drawScrollRef} horizontal showsHorizontalScrollIndicator={false} style={styles.drawScroll}>
           {drawsList.map((d) => (
@@ -1150,7 +1163,7 @@ export default function CheckTicketScreen({
               ]}
               onPress={() => setSelectedDraw(d)}
             >
-              <Text style={styles.drawChipText}>{d.draw_date}</Text>
+              <Text style={[styles.drawChipText, selectedDraw?.draw_date === d.draw_date && styles.drawChipTextActive]}>{d.draw_date}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
@@ -1697,10 +1710,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 44,
     borderRadius: 10,
-    backgroundColor: '#152238',
+    backgroundColor: COLORS.bgCard,
     borderWidth: 1,
-    borderColor: '#1e3254',
-    color: '#f8fafc',
+    borderColor: COLORS.bgElevated,
+    color: COLORS.text,
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
@@ -1736,6 +1749,7 @@ const styles = StyleSheet.create({
   },
   drawChipActive: { backgroundColor: COLORS.primary },
   drawChipText: { color: COLORS.text, fontSize: 14 },
+  drawChipTextActive: { color: COLORS.onFill },
   input: {
     backgroundColor: COLORS.bgCard,
     borderRadius: 10,
@@ -1751,7 +1765,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   checkBtnDisabled: { opacity: 0.5 },
-  checkBtnText: { color: COLORS.text, fontWeight: '700', fontSize: 16 },
+  checkBtnText: { color: COLORS.onFill, fontWeight: '700', fontSize: 16 },
   entryRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   entryBtn: {
     flex: 1,
@@ -1816,7 +1830,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   devViewerBtnSecondary: { backgroundColor: COLORS.bgElevated },
-  devViewerBtnText: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
+  devViewerBtnText: { color: COLORS.onFill, fontSize: 13, fontWeight: '700' },
   devOcrRawBlock: {
     marginTop: 12,
     padding: 10,
@@ -1857,7 +1871,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minWidth: 260,
     borderWidth: 1,
-    borderColor: '#1e3254',
+    borderColor: COLORS.bgElevated,
   },
   readingTitle: { marginTop: 18, color: COLORS.text, fontSize: 17, fontWeight: '700' },
   readingSubtitle: { marginTop: 6, color: COLORS.textMuted, fontSize: 13, textAlign: 'center' },

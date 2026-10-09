@@ -76,8 +76,6 @@ async function runCheck(showAlways = true): Promise<Status[]> {
     if (s.lottery_id === 'lotto_max' || s.lottery_id === 'lotto_649') {
       return s.extra_ok === false || s.encore_ok === false;
     }
-    if (s.lottery_id === 'powerball') return s.power_play_ok === false;
-    if (s.lottery_id === 'mega_millions') return s.mega_multiplier_ok === false;
     return false;
   });
 

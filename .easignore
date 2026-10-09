@@ -4,6 +4,8 @@ electron/
 **/.next/
 **/dist/
 node_modules/
+.venv/
+docs/
 android/.gradle/
 android/app/build/
 android/app/.cxx/
